@@ -1,0 +1,29 @@
+name: AI Issue to PR
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  generate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate PR with AI
+        uses: WillBooster/gen-pr@v4.1.15
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          planning-model: gemini/gemini-2.5-flash
+          coding-tool: gemini-cli
