@@ -18,12 +18,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure Git user
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Generate PR with AI
         uses: WillBooster/gen-pr@v4.1.15
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.8-flash
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           issue-number: ${{ github.event.issue.number }}
-          planning-model: gemini/gemini-2.5-flash
+          planning-model: gemini/gemini-3.8-flash
           coding-tool: gemini-cli
