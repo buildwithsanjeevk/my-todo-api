@@ -16,20 +16,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
 
-      - name: Generate code with Gemini CLI
+      - name: Install Aider AI Agent
+        run: pip install aider-chat
+
+      - name: Generate code with OpenRouter
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_CLI_TRUST_WORKSPACE: "true"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          npx -y @google/gemini-cli@latest -m gemini-3.8-flash --yolo --skip-trust -p "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
+          aider --model openrouter/openrouter/free --yes --no-git --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Details:
