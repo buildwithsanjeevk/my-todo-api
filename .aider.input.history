@@ -1,0 +1,30 @@
+
+# 2026-11-17 20:42:29.699521
++You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
++
++Issue #2: Setup Express.js server and create GET /todos endpoint
++Details:
++Initialize a Node.js and Express.js backend project for a To-Do application and implement the endpoint to fetch all to-dos.
++
++Requirements:
++- Create `package.json` with `express` and `cors` dependencies, and add a `"start": "node index.js"` script.
++- Create `index.js` that sets up an Express server running on port `3000` (or `process.env.PORT`).
++- Create an in-memory array `todos` pre-populated with 2 sample to-do items so the API returns sample data right away. Each to-do object should have `id`, `title`, and `completed` (boolean) fields.
++- Create a `GET /todos` endpoint that returns HTTP status 200 and the JSON list of all `todos`.
++- Add a clear `README.md` file mentioning that this is an Express.js To-Do REST API and explaining how to run it.
++
+
+# 2026-11-17 20:42:29.699580
++You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
++
++Issue #2: Setup Express.js server and create GET /todos endpoint
++Details:
++Initialize a Node.js and Express.js backend project for a To-Do application and implement the endpoint to fetch all to-dos.
++
++Requirements:
++- Create `package.json` with `express` and `cors` dependencies, and add a `"start": "node index.js"` script.
++- Create `index.js` that sets up an Express server running on port `3000` (or `process.env.PORT`).
++- Create an in-memory array `todos` pre-populated with 2 sample to-do items so the API returns sample data right away. Each to-do object should have `id`, `title`, and `completed` (boolean) fields.
++- Create a `GET /todos` endpoint that returns HTTP status 200 and the JSON list of all `todos`.
++- Add a clear `README.md` file mentioning that this is an Express.js To-Do REST API and explaining how to run it.
++

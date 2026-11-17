@@ -1,0 +1,9 @@
+
+## API Endpoints
+
+### GET /todos
+
+Returns HTTP status `200` and a JSON list of all to-dos.
+
+Example request:
+
