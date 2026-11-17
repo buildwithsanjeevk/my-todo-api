@@ -1,19 +1,17 @@
 const express = require('express');
-const cors = require('cors');
-
 const app = express();
-const port = process.env.PORT || 3000;
+const port = 3000;
 
-const todos = [
-  { id: 1, title: 'Learn Express', completed: false },
-  { id: 2, title: 'Build a To-Do API', completed: true },
+let todos = [
+  { id: 1, title: "Learn Express", completed: false },
+  { id: 2, title: "Build a To-Do API", completed: true },
+  { id: 3, title: "Write unit tests", completed: false },
+  { id: 4, title: "Review pull requests", completed: false },
+  { id: 5, title: "Update project documentation", completed: true }
 ];
 
-app.use(cors());
-app.use(express.json());
-
 app.get('/todos', (req, res) => {
-  res.status(200).json(todos);
+  res.json(todos);
 });
 
 app.listen(port, () => {
