@@ -24,11 +24,12 @@ jobs:
       - name: Generate code with Gemini CLI
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          npx -y @google/gemini-cli@latest -m gemini-3.8-flash --yolo -p "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
+          npx -y @google/gemini-cli@latest -m gemini-3.8-flash --yolo --skip-trust -p "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Details:
