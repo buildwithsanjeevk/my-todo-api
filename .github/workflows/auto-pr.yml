@@ -31,7 +31,7 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          aider --model openrouter/openrouter/free --yes --no-git --no-chat-history --no-input-history --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary source code files in the repository. Only create actual project files (like package.json, index.js, README.md) and NEVER create files named after terminal commands.
+          aider --model openrouter/openrouter/free --yes --no-git --no-suggest-shell-commands --chat-history-file /tmp/chat.md --input-history-file /tmp/input.txt --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary source code files in the repository. Only create actual project files (like package.json, index.js, README.md) and NEVER create files named after terminal commands.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Details:
