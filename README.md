@@ -1,18 +1,27 @@
-# Express.js To-Do REST API
-
-A simple Express.js REST API for a To-Do application.
+# Todos API
 
 ## Endpoints
 
-### GET /todos
+| Method | Endpoint      | Description                     |
+|--------|---------------|---------------------------------|
+| GET    | /todos        | Retrieve all to-do items        |
+| GET    | /todos/:id    | Retrieve a single to-do by ID   |
 
-Returns all to-dos as JSON.
+## Sample Data
 
-## Running
+The following sample to‑do items are available:
 
-1. Install dependencies: `npm install`
-2. Start the server: `npm start`
+- **id:** 1  
+  **title:** Buy groceries  
+  **completed:** false
 
-The API will be available at `http://localhost:3000`.
+- **id:** 2  
+  **title:** Walk the dog  
+  **completed:** true
 
-This project uses an in-memory array of to-dos, so the sample data resets when the server restarts.
+- **id:** 3  
+  **title:** Write documentation  
+  **completed:** false
+
+## Running the Server
+

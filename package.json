@@ -1,13 +1,18 @@
 {
-  "name": "todo-express-api",
+  "name": "todos-api",
   "version": "1.0.0",
-  "description": "Express.js To-Do REST API",
+  "description": "A simple in-memory to-do REST API built with Express.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "keywords": [
+    "todos",
+    "express",
+    "api"
+  ],
+  "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^4.19.2"
   }
 }
