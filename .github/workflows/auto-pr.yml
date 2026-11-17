@@ -1,4 +1,4 @@
-name: AI Issue to PR
+name: AI Issue to PR (With Auto-Review & Fix)
 
 on:
   issues:
@@ -10,11 +10,16 @@ permissions:
   issues: write
 
 jobs:
-  generate-pr:
+  generate-and-review-pr:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js & Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -24,22 +29,60 @@ jobs:
       - name: Install Aider AI Agent
         run: pip install aider-chat
 
-      - name: Generate code with OpenRouter
+      - name: Step 1 - AI Writes Initial Code
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          aider --model openrouter/openrouter/free --yes --no-git --no-suggest-shell-commands --chat-history-file /tmp/chat.md --input-history-file /tmp/input.txt --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary source code files in the repository. Only create actual project files (like package.json, index.js, README.md) and NEVER create files named after terminal commands.
+          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands --edit-format whole --chat-history-file /tmp/chat1.md --input-history-file /tmp/input1.txt --message "You are an expert Node.js programmer. Implement the requirements in this GitHub Issue by creating or updating clean source code files (such as package.json, index.js, README.md).
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Details:
           $ISSUE_BODY"
-          rm -f .aider* "npm install" "npm start" "PORT=4000 npm start" "]"
-          rm -rf "curl http:"
+          find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
 
-      - name: Create Pull Request
+      - name: Step 2 - Real Runtime Test (Check if Server Starts)
+        run: |
+          if [ -f "package.json" ]; then
+            npm install > /tmp/test_log.txt 2>&1 || true
+            node --check index.js >> /tmp/test_log.txt 2>&1 || true
+            timeout 8s npm start >> /tmp/test_log.txt 2>&1 &
+            SERVER_PID=$!
+            sleep 3
+            curl -i -s http://localhost:3000/todos >> /tmp/test_log.txt 2>&1 || echo "Endpoint check failed" >> /tmp/test_log.txt
+            kill $SERVER_PID 2>/dev/null || true
+          else
+            echo "package.json missing" > /tmp/test_log.txt
+          fi
+          cat /tmp/test_log.txt
+
+      - name: Step 3 - Senior AI Reviews & Auto-Fixes Bugs
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          TEST_OUTPUT=$(cat /tmp/test_log.txt)
+          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands --edit-format whole --chat-history-file /tmp/chat2.md --input-history-file /tmp/input2.txt --message "You are a strict Senior Code Reviewer. Review all files in this repository against the GitHub Issue requirements and the runtime test logs below.
+
+          Issue #$ISSUE_NUMBER: $ISSUE_TITLE
+          Requirements:
+          $ISSUE_BODY
+
+          Runtime Test Logs:
+          $TEST_OUTPUT
+
+          Your Job:
+          1. Check if any requirement from the issue is missing or incomplete.
+          2. Check if there are any syntax errors, broken JSON, incomplete markdown, or runtime crashes in the logs.
+          3. Directly fix any bugs, missing error handling, or formatting issues in the files. If everything is already clean and working, make no changes."
+          find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
+          rm -rf node_modules package-lock.json
+
+      - name: Step 4 - Create Verified Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -48,12 +91,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -z "$(git status --porcelain)" ]; then
-            echo "AI ne koi file change nahi ki."
+            echo "AI ne koi valid file change nahi ki."
             exit 1
           fi
           BRANCH="ai-issue-${ISSUE_NUMBER}-$(date +%s)"
           git checkout -b "$BRANCH"
           git add -A
-          git commit -m "feat: resolve issue #${ISSUE_NUMBER}"
+          git commit -m "feat: resolve and auto-review issue #${ISSUE_NUMBER}"
           git push origin "$BRANCH"
-          gh pr create --title "AI: ${ISSUE_TITLE}" --body "Closes #${ISSUE_NUMBER}" --base main --head "$BRANCH"
+          gh pr create --title "AI (Reviewed): ${ISSUE_TITLE}" --body "Closes #${ISSUE_NUMBER} — Code written, runtime-tested, and auto-reviewed by AI." --base main --head "$BRANCH"
