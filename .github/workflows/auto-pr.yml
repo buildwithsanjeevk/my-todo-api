@@ -31,11 +31,13 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          aider --model openrouter/openrouter/free --yes --no-git --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
+          aider --model openrouter/openrouter/free --yes --no-git --no-chat-history --no-input-history --message "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary source code files in the repository. Only create actual project files (like package.json, index.js, README.md) and NEVER create files named after terminal commands.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Details:
           $ISSUE_BODY"
+          rm -f .aider* "npm install" "npm start" "PORT=4000 npm start" "]"
+          rm -rf "curl http:"
 
       - name: Create Pull Request
         env:
