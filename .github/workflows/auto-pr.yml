@@ -2,7 +2,7 @@ name: AI Issue to PR
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   contents: write
@@ -15,21 +15,40 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
+          node-version: '20'
 
-      - name: Configure Git user
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Generate PR with AI
-        uses: WillBooster/gen-pr@v4.1.15
+      - name: Generate code with Gemini CLI
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.8-flash
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          issue-number: ${{ github.event.issue.number }}
-          planning-model: gemini/gemini-3.8-flash
-          coding-tool: gemini-cli
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          npx -y @google/gemini-cli@latest -m gemini-3.8-flash --yolo -p "You are an expert programmer. Complete the task described in this GitHub Issue by creating or updating the necessary files in the repository. Do not ask questions, just write clean working code.
+
+          Issue #$ISSUE_NUMBER: $ISSUE_TITLE
+          Details:
+          $ISSUE_BODY"
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "AI ne koi file change nahi ki."
+            exit 1
+          fi
+          BRANCH="ai-issue-${ISSUE_NUMBER}-$(date +%s)"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "feat: resolve issue #${ISSUE_NUMBER}"
+          git push origin "$BRANCH"
+          gh pr create --title "AI: ${ISSUE_TITLE}" --body "Closes #${ISSUE_NUMBER}" --base main --head "$BRANCH"
