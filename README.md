@@ -8,6 +8,20 @@ A simple Express.js REST API for a To-Do application.
 
 Returns all to-dos as JSON.
 
+#### Query Parameters
+
+- `completed` (optional): Filter by completion status. Accepts `"true"` or `"false"` (case-insensitive).
+
+Example requests:
+
+- `GET /todos` - returns all to-dos.
+- `GET /todos?completed=true` - returns completed to-dos.
+- `GET /todos?completed=false` - returns incomplete to-dos.
+
+If `completed` is provided and is not `"true"` or `"false"`, the API returns a `400` response with JSON body:
+
+`{ "error": "Invalid 'completed' query parameter. Expected 'true' or 'false'." }`
+
 ### GET /todos/:id
 
 Returns a single to-do by its `id`.
