@@ -1,0 +1,80 @@
+name: 3. AI Fix PR on Comment
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix-pr-feedback:
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout PR Branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh pr checkout "$PR_NUMBER"
+
+      - name: Setup Node.js & Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Aider AI Agent
+        run: pip install aider-chat
+
+      - name: Resolve PR Comment with AI
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_TITLE: ${{ github.event.issue.title }}
+          REVIEW_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          SKILL_ARGS=""
+          for file in .skills/**/SKILL.md; do
+            [ -f "$file" ] && SKILL_ARGS="$SKILL_ARGS --read $file"
+          done
+
+          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat_pr.md --input-history-file /tmp/input_pr.txt --message "You are an expert Node.js programmer updating an existing Pull Request based on the reviewer's feedback. Obey all SKILL.md rules and make minimal, surgical changes to resolve the comment.
+
+          PR #$PR_NUMBER: $PR_TITLE
+          Reviewer Feedback Comment:
+          $REVIEW_COMMENT"
+
+          find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
+          if [ -f "index.js" ]; then
+            node --check index.js
+          fi
+
+      - name: Push Fix to Same PR Branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            gh pr comment "$PR_NUMBER" --body "ℹ️ Is comment ke baad code mein koi change karne ki zaroorat nahi padi."
+            exit 0
+          fi
+          git add -A
+          git commit -m "fix: address PR review feedback"
+          git push
+          gh pr comment "$PR_NUMBER" --body "✅ Aapke comment ke hisaab se code update karke isi PR branch mein push kar diya gaya hai!"
