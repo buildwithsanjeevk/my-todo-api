@@ -14,6 +14,16 @@ app.get('/todos', (req, res) => {
   res.json(todos);
 });
 
+app.get('/todos/:id', (req, res) => {
+  // Find a todo by its ID
+  const todo = todos.find(todo => String(todo.id) === String(req.params.id));
+  if (todo) {
+    res.json(todo);
+  } else {
+    res.status(404).json({ error: "Todo not found" });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
