@@ -8,7 +8,6 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  actions: write
 
 concurrency:
   group: approve-issue-${{ github.event.issue.number }}
@@ -174,6 +173,4 @@ jobs:
           git push origin "$BRANCH"
 
           PR_URL=$(gh pr create --title "AI: ${ISSUE_TITLE}" --body-file /tmp/pr_body.md --base main --head "$BRANCH")
-          PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
           gh issue comment "$ISSUE_NUMBER" --body "✅ Surgical code changes taiyar hain aur Pull Request open ho gaya hai: ${PR_URL}"
-          gh workflow run pr-reviewer.yml -f pr_number="$PR_NUM" || true
