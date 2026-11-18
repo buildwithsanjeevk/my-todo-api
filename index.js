@@ -13,9 +13,12 @@ let todos = [
 
 // GET endpoint to retrieve a single todo by its ID
 app.get('/todos/:id', (req, res) => {
+  // Convert the URL parameter to string for comparison
   const idParam = String(req.params.id);
+  // Find the todo with matching ID
   const todo = todos.find(todo => String(todo.id) === idParam);
   if (todo) {
+    // Return the todo with 200 OK status (kept to ensure proper response)
     res.status(200).json(todo);
   } else {
     res.status(404).json({ error: "Todo not found" });
