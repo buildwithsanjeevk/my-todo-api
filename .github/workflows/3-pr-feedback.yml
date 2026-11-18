@@ -8,13 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR Number (jaise 13)'
+        description: 'PR Number (jaise 15)'
         required: true
         type: string
 
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: pr-fix-${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
@@ -101,7 +102,7 @@ jobs:
           Latest Review/Comment Trigger:
           $LATEST_COMMENT
 
-          Recent PR Conversation Comments:
+          Recent PR Conversation Comments (including AI Reviewer suggestions if any):
           $PR_COMMENTS
 
           File-Level Inline Review Comments:
@@ -180,3 +181,4 @@ jobs:
 
           printf "✅ **Review feedback ke hisaab se surgical fix push kar diya gaya hai:**\n\n\`\`\`text\n%s\n\`\`\`\n" "$DIFF_STAT" > /tmp/pr_fix_reply.md
           gh pr comment "$PR_NUMBER" --body-file /tmp/pr_fix_reply.md
+          gh workflow run pr-reviewer.yml -f pr_number="$PR_NUMBER" || true
