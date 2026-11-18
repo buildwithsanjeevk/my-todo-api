@@ -1,0 +1,206 @@
+name: 4. AI PR Code Reviewer
+
+run-name: 🔍 AI PR Review — PR #${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number to review (e.g., 15)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-review-${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run AI Code Review & Apply Verdict Label
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+        run: |
+          python3 - << 'EOF'
+          import os, json, glob, time, subprocess, urllib.request
+
+          pr_num = os.environ["PR_NUMBER"]
+
+          def run_cmd(cmd):
+              res = subprocess.run(cmd, capture_output=True, text=True)
+              if res.returncode != 0:
+                  raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
+              return res.stdout
+
+          # 1. Fetch PR metadata, linked issue context, and diff
+          pr_json = json.loads(run_cmd([
+              "gh", "pr", "view", pr_num,
+              "--json", "title,body,headRefName,baseRefName,files,closingIssuesReferences"
+          ]))
+          pr_diff = run_cmd(["gh", "pr", "diff", pr_num])
+
+          # 2. Load repository .skills/ standards
+          skills_text = []
+          for path in sorted(glob.glob(".skills/**/SKILL.md", recursive=True)):
+              if os.path.isfile(path):
+                  with open(path, "r", encoding="utf-8") as f:
+                      skills_text.append(f"=== {path} ===\n{f.read()}")
+          skills_context = "\n\n".join(skills_text) or "No custom SKILL.md files found."
+
+          # 3. Read full content of changed files from PR branch for complete context
+          head_ref = pr_json["headRefName"]
+          run_cmd(["git", "fetch", "origin", head_ref])
+          changed_files_content = []
+          for f_info in pr_json.get("files", []):
+              fpath = f_info["path"]
+              show_res = subprocess.run(
+                  ["git", "show", f"origin/{head_ref}:{fpath}"],
+                  capture_output=True, text=True
+              )
+              if show_res.returncode == 0:
+                  changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:8000]}")
+
+          linked_issues = "\n".join(
+              f"- Issue #{i['number']}: {i['title']}\n{i.get('body', '')}"
+              for i in pr_json.get("closingIssuesReferences", [])
+          ) or "None linked."
+
+          system_prompt = """You are a Principal Code Reviewer performing a strict, helpful Pull Request review.
+          Evaluate the PR diff and full changed files against:
+          1. The PR description & linked Issue requirements (are all acceptance criteria and edge cases met?).
+          2. Repository `.skills/` rules (minimal surgical diffs, no accidental deletion of existing working code, proper HTTP status codes, clean JSON error responses, README updates).
+          3. Bugs, syntax issues, security flaws, or logic errors.
+
+          Respond ONLY with valid JSON using this exact schema (no markdown fences, no extra text):
+          {
+            "status": "APPROVED" or "CHANGES_REQUESTED",
+            "summary": "2-3 sentence clear summary of your review findings.",
+            "checklist": [
+              "Short bullet confirming what was checked (e.g., Requirements & edge cases verified)"
+            ],
+            "suggestions": [
+              {
+                "file": "filename",
+                "issue": "Clear description of the bug, missing requirement, or violation",
+                "recommendation": "Exact fix or improvement needed"
+              }
+            ]
+          }
+
+          Rules:
+          - Use "APPROVED" ONLY when the code is clean, complete, preserves existing functionality, and has zero blocking issues (leave "suggestions" as an empty list []).
+          - Use "CHANGES_REQUESTED" if any requirement is missing, existing working code was removed, error handling is wrong, or there is a bug."""
+
+          user_prompt = f"""PR #{pr_num}: {pr_json['title']}
+          PR Body:
+          {pr_json.get('body', '')}
+
+          Linked Issue Requirements:
+          {linked_issues}
+
+          Repository Agent Skills:
+          {skills_context}
+
+          Git Diff:
+          {pr_diff[:18000]}
+
+          Full Changed Files (for context):
+          {chr(10).join(changed_files_content)[:18000]}
+          """
+
+          payload = json.dumps({
+              "model": "openrouter/free",
+              "temperature": 0.1,
+              "max_tokens": 2500,
+              "messages": [
+                  {"role": "system", "content": system_prompt},
+                  {"role": "user", "content": user_prompt}
+              ]
+          }).encode("utf-8")
+
+          raw_reply = None
+          for attempt in range(2):
+              try:
+                  req = urllib.request.Request(
+                      "https://openrouter.ai/api/v1/chat/completions",
+                      data=payload,
+                      headers={
+                          "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
+                          "Content-Type": "application/json",
+                          "HTTP-Referer": "https://github.com",
+                          "X-Title": "GitHub AI PR Reviewer"
+                      }
+                  )
+                  with urllib.request.urlopen(req, timeout=90) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                      raw_reply = data["choices"][0]["message"]["content"].strip()
+                      break
+              except Exception as e:
+                  if attempt == 1:
+                      raise RuntimeError(f"OpenRouter review failed: {e}")
+                  time.sleep(3)
+
+          # Strip accidental markdown code fences if present
+          if raw_reply.startswith("```"):
+              raw_reply = raw_reply.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+          review = json.loads(raw_reply)
+          status = review.get("status", "CHANGES_REQUESTED").upper()
+          summary = review.get("summary", "")
+          checklist = review.get("checklist", [])
+          suggestions = review.get("suggestions", [])
+
+          # Ensure labels exist in repository
+          subprocess.run(["gh", "label", "create", "approved", "--color", "0E8A16", "--description", "AI Code Review Passed", "--force"], check=False)
+          subprocess.run(["gh", "label", "changes-requested", "--color", "D93F0B", "--description", "AI Code Review Suggested Changes", "--force"], check=False)
+
+          checklist_md = "\n".join(f"- ✅ {item}" for item in checklist)
+
+          if status == "APPROVED" and not suggestions:
+              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "approved", "--remove-label", "changes-requested"], check=True)
+              comment_body = (
+                  f"## 🟢 AI Code Review: Approved\n\n"
+                  f"{summary}\n\n"
+                  f"### Verification Checklist\n"
+                  f"{checklist_md}\n\n"
+                  f"---\n"
+                  f"🏷️ Label **`approved`** has been added. Ready for your final merge decision!"
+              )
+          else:
+              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "changes-requested", "--remove-label", "approved"], check=True)
+              suggestions_md = "\n\n".join(
+                  f"#### 📄 `{s.get('file', 'General')}`\n"
+                  f"- **Issue:** {s.get('issue', '')}\n"
+                  f"- **Suggested Fix:** {s.get('recommendation', '')}"
+                  for s in suggestions
+              )
+              comment_body = (
+                  f"## 🟠 AI Code Review: Changes Suggested\n\n"
+                  f"{summary}\n\n"
+                  f"### Suggested Improvements\n"
+                  f"{suggestions_md}\n\n"
+                  f"---\n"
+                  f"🏷️ Label **`changes-requested`** has been added.\n"
+                  f"👉 **Your Next Step:** Reply with **`Please apply the suggested AI review changes`** to have the AI fix these automatically, or merge/close as you prefer."
+              )
+
+          with open("/tmp/pr_review_comment.md", "w", encoding="utf-8") as f:
+              f.write(comment_body)
+
+          run_cmd(["gh", "pr", "comment", pr_num, "--body-file", "/tmp/pr_review_comment.md"])
+          EOF
