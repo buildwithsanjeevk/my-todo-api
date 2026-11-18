@@ -41,7 +41,7 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          gh issue view "$ISSUE_NUMBER" --comments --json comments --jq '[.comments[] | select(.body | contains("AI Implementation Plan")) | .body] | last // ""' > /tmp/approved_plan.txt
+          gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("AI Implementation Plan")) | .body] | last // ""' > /tmp/approved_plan.txt
           APPROVED_PLAN=$(cat /tmp/approved_plan.txt)
 
           SKILL_ARGS=""
@@ -72,29 +72,6 @@ jobs:
             kill $SERVER_PID 2>/dev/null || true
           fi
           cat /tmp/test_log.txt
-
-      - name: Senior AI Review & Auto-Fix
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
-        run: |
-          SKILL_ARGS=""
-          for file in .skills/**/SKILL.md; do
-            [ -f "$file" ] && SKILL_ARGS="$SKILL_ARGS --read $file"
-          done
-          TEST_OUTPUT=$(cat /tmp/test_log.txt)
-
-          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat2.md --input-history-file /tmp/input2.txt --message "You are a strict Senior Code Reviewer. Verify that the code matches the issue, passes runtime tests, and obeys all SKILL.md rules (minimal changes, preserving existing code). Fix any bugs directly.
-
-          Issue #$ISSUE_NUMBER: $ISSUE_TITLE
-          $ISSUE_BODY
-
-          Runtime Logs:
-          $TEST_OUTPUT"
-
-          find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
           rm -rf node_modules package-lock.json
 
       - name: Create Pull Request
@@ -114,5 +91,5 @@ jobs:
           git add -A
           git commit -m "feat: resolve issue #${ISSUE_NUMBER}"
           git push origin "$BRANCH"
-          PR_URL=$(gh pr create --title "AI (Reviewed): ${ISSUE_TITLE}" --body "Closes #${ISSUE_NUMBER} — Built from approved plan using Agent Skills." --base main --head "$BRANCH")
+          PR_URL=$(gh pr create --title "AI: ${ISSUE_TITLE}" --body "Closes #${ISSUE_NUMBER} — Built from approved plan using Agent Skills." --base main --head "$BRANCH")
           gh issue comment "$ISSUE_NUMBER" --body "✅ Code likh diya gaya hai aur Pull Request taiyar hai: ${PR_URL}"
