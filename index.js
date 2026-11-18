@@ -1,3 +1,4 @@
+// entire file content ...
 const express = require('express');
 const app = express();
 const port = 3000;
@@ -10,10 +11,7 @@ let todos = [
   { id: 5, title: "Update project documentation", completed: true }
 ];
 
-app.get('/todos', (req, res) => {
-  res.json(todos);
-});
-
+// GET endpoint to retrieve a single todo by its ID
 app.get('/todos/:id', (req, res) => {
   const idParam = String(req.params.id);
   const todo = todos.find(todo => String(todo.id) === idParam);
