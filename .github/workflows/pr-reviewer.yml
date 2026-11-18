@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR Number to review (e.g., 15)'
+        description: 'PR Number to review (e.g., 17)'
         required: true
         type: string
 
@@ -47,14 +47,30 @@ jobs:
                   raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
               return res.stdout
 
-          # 1. Fetch PR metadata, linked issue context, and diff
+          # 1. Fetch PR metadata and diff
           pr_json = json.loads(run_cmd([
               "gh", "pr", "view", pr_num,
               "--json", "title,body,headRefName,baseRefName,files,closingIssuesReferences"
           ]))
           pr_diff = run_cmd(["gh", "pr", "diff", pr_num])
 
-          # 2. Load repository .skills/ standards
+          # 2. Fetch full details of linked issues safely
+          linked_issue_blocks = []
+          for ref in pr_json.get("closingIssuesReferences", []):
+              inum = str(ref.get("number", ""))
+              if inum:
+                  ires = subprocess.run(
+                      ["gh", "issue", "view", inum, "--json", "number,title,body"],
+                      capture_output=True, text=True
+                  )
+                  if ires.returncode == 0:
+                      idata = json.loads(ires.stdout)
+                      linked_issue_blocks.append(
+                          f"- Issue #{idata.get('number')}: {idata.get('title', '')}\n{idata.get('body', '')}"
+                      )
+          linked_issues = "\n\n".join(linked_issue_blocks) or "None linked."
+
+          # 3. Load repository .skills/ standards
           skills_text = []
           for path in sorted(glob.glob(".skills/**/SKILL.md", recursive=True)):
               if os.path.isfile(path):
@@ -62,7 +78,7 @@ jobs:
                       skills_text.append(f"=== {path} ===\n{f.read()}")
           skills_context = "\n\n".join(skills_text) or "No custom SKILL.md files found."
 
-          # 3. Read full content of changed files from PR branch for complete context
+          # 4. Read full content of changed files from PR branch for complete context
           head_ref = pr_json["headRefName"]
           run_cmd(["git", "fetch", "origin", head_ref])
           changed_files_content = []
@@ -74,11 +90,6 @@ jobs:
               )
               if show_res.returncode == 0:
                   changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:8000]}")
-
-          linked_issues = "\n".join(
-              f"- Issue #{i['number']}: {i['title']}\n{i.get('body', '')}"
-              for i in pr_json.get("closingIssuesReferences", [])
-          ) or "None linked."
 
           system_prompt = """You are a Principal Code Reviewer performing a strict, helpful Pull Request review.
           Evaluate the PR diff and full changed files against:
@@ -155,11 +166,13 @@ jobs:
                       raise RuntimeError(f"OpenRouter review failed: {e}")
                   time.sleep(3)
 
-          # Strip accidental markdown code fences if present
-          if raw_reply.startswith("```"):
-              raw_reply = raw_reply.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+          # Extract valid JSON object even if model wraps it in markdown or text
+          start_idx = raw_reply.find("{")
+          end_idx = raw_reply.rfind("}")
+          if start_idx == -1 or end_idx == -1:
+              raise RuntimeError(f"AI did not return valid JSON:\n{raw_reply}")
+          review = json.loads(raw_reply[start_idx:end_idx + 1])
 
-          review = json.loads(raw_reply)
           status = review.get("status", "CHANGES_REQUESTED").upper()
           summary = review.get("summary", "")
           checklist = review.get("checklist", [])
@@ -172,7 +185,8 @@ jobs:
           checklist_md = "\n".join(f"- ✅ {item}" for item in checklist)
 
           if status == "APPROVED" and not suggestions:
-              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "approved", "--remove-label", "changes-requested"], check=True)
+              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "approved"], check=True)
+              subprocess.run(["gh", "pr", "edit", pr_num, "--remove-label", "changes-requested"], check=False)
               comment_body = (
                   f"## 🟢 AI Code Review: Approved\n\n"
                   f"{summary}\n\n"
@@ -182,7 +196,8 @@ jobs:
                   f"🏷️ Label **`approved`** has been added. Ready for your final merge decision!"
               )
           else:
-              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "changes-requested", "--remove-label", "approved"], check=True)
+              subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "changes-requested"], check=True)
+              subprocess.run(["gh", "pr", "edit", pr_num, "--remove-label", "approved"], check=False)
               suggestions_md = "\n\n".join(
                   f"#### 📄 `{s.get('file', 'General')}`\n"
                   f"- **Issue:** {s.get('issue', '')}\n"
