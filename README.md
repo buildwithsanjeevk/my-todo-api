@@ -8,6 +8,10 @@ A simple Express.js REST API for a To-Do application.
 
 Returns all to-dos as JSON.
 
+### GET /todos/:id
+
+Returns a single to-do by its `id`.
+
 ## Running
 
 1. Install dependencies: `npm install`
