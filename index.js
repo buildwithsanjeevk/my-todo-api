@@ -2,6 +2,9 @@ const express = require('express');
 const app = express();
 const port = 3000;
 
+const swaggerUi = require('swagger-ui-express');
+const swaggerDocument = require('./docs/openapi.json');
+
 let todos = [
   { id: 1, title: "Learn Express", completed: false },
   { id: 2, title: "Build a To-Do API", completed: true },
@@ -38,6 +41,8 @@ app.get('/todos/:id', (req, res) => {
     res.status(404).json({ error: "Todo not found" });
   }
 });
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

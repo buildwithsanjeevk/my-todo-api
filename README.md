@@ -34,3 +34,9 @@ Returns a single to-do by its `id`.
 The API will be available at `http://localhost:3000`.
 
 This project uses an in-memory array of to-dos, so the sample data resets when the server restarts.
+
+## API Documentation
+
+Interactive Swagger UI is available at:
+
+`http://localhost:3000/api-docs`
