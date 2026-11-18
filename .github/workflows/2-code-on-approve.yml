@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js & Python
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -49,14 +49,16 @@ jobs:
             [ -f "$file" ] && SKILL_ARGS="$SKILL_ARGS --read $file"
           done
 
-          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat1.md --input-history-file /tmp/input1.txt --message "You are an expert Node.js programmer. Follow all loaded SKILL.md rules strictly and implement the approved plan below with minimal, surgical changes.
+          EXISTING_FILES=$(ls *.js *.json *.md 2>/dev/null || true)
+
+          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat1.md --input-history-file /tmp/input1.txt --message "You are an expert Node.js programmer. Follow all loaded SKILL.md rules strictly and implement the approved plan below with minimal, surgical changes. Keep all existing working code and routes intact.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Description:
           $ISSUE_BODY
 
           Approved Implementation Plan:
-          $APPROVED_PLAN"
+          $APPROVED_PLAN" $EXISTING_FILES
 
           find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
 
