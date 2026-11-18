@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   fix-pr-feedback:
-    if: (github.event_name == 'workflow_dispatch') || (github.actor == github.repository_owner && (github.event_name == 'pull_request_review' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)))
+    if: (github.event_name == 'workflow_dispatch') || (github.actor == github.repository_owner && ((github.event_name == 'pull_request_review' && github.event.review.state != 'approved') || (github.event_name == 'issue_comment' && github.event.issue.pull_request)))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -35,9 +35,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
         run: |
+          if [ -z "$PR_NUMBER" ]; then
+            echo "PR number nahi mila."
+            exit 1
+          fi
+          git fetch origin main
           gh pr checkout "$PR_NUMBER"
 
-      - name: Setup Node.js & Python
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -50,56 +55,128 @@ jobs:
       - name: Install Aider AI Agent
         run: pip install aider-chat
 
-      - name: Resolve PR Comment & Review Feedback with AI
+      - name: Resolve PR Comments (Surgical & Best Practices)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
-          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body || 'Please fix all review comments on this PR' }}
+          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body || 'Address all inline review comments on this PR' }}
         run: |
           INLINE_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --jq '.[] | "- File: \(.path) (Line \(.line // .original_line)): \(.body)"' 2>/dev/null || echo "")
-          PR_COMMENTS=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[-3:][] | "- \(.body)"' 2>/dev/null || echo "")
+          PR_COMMENTS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select((.body | startswith("✅") | not) and (.body | startswith("ℹ️") | not) and (.body | startswith("⚠️") | not))][-4:][] | "- \(.body)"' 2>/dev/null || echo "")
           PR_INFO=$(gh pr view "$PR_NUMBER" --json title,body --jq '"\(.title)\n\(.body)"')
 
-          SKILL_ARGS=""
-          for file in .skills/**/SKILL.md; do
-            [ -f "$file" ] && SKILL_ARGS="$SKILL_ARGS --read $file"
-          done
+          SKILL_ARGS=()
+          while IFS= read -r file; do
+            SKILL_ARGS+=(--read "$file")
+          done < <(find .skills -name 'SKILL.md' 2>/dev/null || true)
 
-          EXISTING_FILES=$(ls *.js *.json *.md 2>/dev/null || true)
+          EXISTING_FILES=()
+          while IFS= read -r file; do
+            EXISTING_FILES+=("$file")
+          done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat_pr.md --input-history-file /tmp/input_pr.txt --message "You are an expert Node.js programmer updating an existing Pull Request based on the reviewer's feedback. Obey all SKILL.md rules strictly. NEVER delete existing working code from main—keep all existing endpoints/documentation intact and apply only the requested changes.
+          aider \
+            --model openrouter/openrouter/free \
+            --edit-format diff \
+            --yes-always \
+            --no-git \
+            --no-suggest-shell-commands \
+            --map-tokens 1024 \
+            "${SKILL_ARGS[@]}" \
+            --chat-history-file /tmp/chat_pr.md \
+            --input-history-file /tmp/input_pr.txt \
+            --message "You are a Senior Node.js Backend Engineer updating an existing Pull Request based on code review feedback. Follow industry best practices and all loaded SKILL.md rules strictly.
 
-          PR #$PR_NUMBER Details:
+          STRICT ENGINEERING RULES:
+          1. SURGICAL DIFFS ONLY: Change ONLY the exact lines needed to resolve the reviewer's feedback. Keep changes small, clean, and easy to review.
+          2. NEVER DELETE EXISTING CODE: Preserve all working routes, sample data, helper functions, and README sections from the main branch unless explicitly asked to remove them.
+          3. BEST PRACTICES: Use proper HTTP status codes (200, 201, 400, 404, 500), clean input validation, safe ID comparisons, and consistent JSON error responses.
+          4. NO JUNK FILES: Only edit or create valid project source/doc files.
+
+          PR #$PR_NUMBER Context:
           $PR_INFO
 
-          Latest Trigger Comment:
+          Latest Review/Comment Trigger:
           $LATEST_COMMENT
 
-          Recent PR Comments:
+          Recent PR Conversation Comments:
           $PR_COMMENTS
 
           File-Level Inline Review Comments:
-          $INLINE_COMMENTS" $EXISTING_FILES
+          $INLINE_COMMENTS" "${EXISTING_FILES[@]}"
 
-          find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
-          if [ -f "index.js" ]; then
-            node --check index.js
+          find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '*.sql' ! -name '.gitignore' -delete
+
+      - name: Anti-Deletion & Syntax Guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body || '' }}
+        run: |
+          # 1. Verify syntax of all JavaScript files
+          find . -maxdepth 3 -name '*.js' ! -path './node_modules/*' -exec node --check {} +
+
+          # 2. Ensure existing code from origin/main was not accidentally wiped out
+          python3 - << 'EOF'
+          import subprocess, sys, os
+
+          comment_text = (os.environ.get("LATEST_COMMENT") or "").lower()
+          allow_delete = any(w in comment_text for w in ["delete", "remove", "replace", "refactor", "clean up"])
+
+          res = subprocess.run(["git", "diff", "--numstat", "origin/main"], capture_output=True, text=True)
+          for line in res.stdout.strip().splitlines():
+              parts = line.split("\t")
+              if len(parts) != 3:
+                  continue
+              added, deleted, path = parts
+              if added == "-" or deleted == "-":
+                  continue
+              deleted = int(deleted)
+              orig_res = subprocess.run(["git", "show", f"origin/main:{path}"], capture_output=True, text=True)
+              if orig_res.returncode != 0:
+                  continue
+              orig_lines = len(orig_res.stdout.splitlines())
+              if not allow_delete and orig_lines >= 15 and deleted > (orig_lines * 0.4):
+                  print(f"ERROR: Too much code from main deleted in {path} ({deleted}/{orig_lines} lines).")
+                  sys.exit(1)
+          EOF
+
+      - name: Runtime Smoke Test
+        run: |
+          if [ -f "package.json" ]; then
+            npm install > /tmp/test_log.txt 2>&1 || true
+            if grep -q '"test"' package.json && ! grep -q 'no test specified' package.json; then
+              npm test >> /tmp/test_log.txt 2>&1 || true
+            fi
+            timeout 8s npm start >> /tmp/test_log.txt 2>&1 &
+            SERVER_PID=$!
+            sleep 3
+            curl -i -s http://localhost:3000/todos >> /tmp/test_log.txt 2>&1 || echo "Endpoint check failed" >> /tmp/test_log.txt
+            kill $SERVER_PID 2>/dev/null || true
           fi
+          cat /tmp/test_log.txt
+          rm -rf node_modules
+          git checkout -- package-lock.json 2>/dev/null || rm -f package-lock.json
 
-      - name: Push Fix to Same PR Branch
+      - name: Push Concise Fix to Same PR Branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           if [ -z "$(git status --porcelain)" ]; then
-            gh pr comment "$PR_NUMBER" --body "ℹ️ Review comments check kiye gaye, par code mein koi naya change nahi hua."
+            gh pr comment "$PR_NUMBER" --body "ℹ️ Review comments check kiye gaye, par code mein koi naya change karne ki zaroorat nahi padi."
             exit 0
           fi
+
+          DIFF_STAT=$(git diff --stat HEAD)
           git add -A
           git commit -m "fix: address PR review feedback"
           git push origin HEAD
-          gh pr comment "$PR_NUMBER" --body "✅ Aapke review comments ke hisaab se code fix karke isi PR branch mein push kar diya gaya hai!"
+
+          printf "✅ **Review feedback ke hisaab se surgical fix push kar diya gaya hai:**\n\n\`\`\`text\n%s\n\`\`\`\n" "$DIFF_STAT" > /tmp/pr_fix_reply.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/pr_fix_reply.md
