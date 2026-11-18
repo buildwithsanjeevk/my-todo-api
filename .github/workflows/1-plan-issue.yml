@@ -2,20 +2,23 @@ name: 1. AI Implementation Planner
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
 
 permissions:
   issues: write
   contents: read
 
 jobs:
-  create-plan:
+  create-or-update-plan:
+    if: github.event_name == 'issues' || (!github.event.issue.pull_request && github.event.comment.user.login == github.repository_owner && !contains(github.event.comment.body, '/approve'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate and Post Implementation Plan
+      - name: Generate Principal-Level Architecture & LLD Plan
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -24,50 +27,131 @@ jobs:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           python3 - << 'EOF'
-          import os, json, glob, urllib.request
+          import os, json, time, urllib.request, subprocess
 
+          issue_num = os.environ["ISSUE_NUMBER"]
+          issue_title = os.environ["ISSUE_TITLE"]
+          issue_body = os.environ.get("ISSUE_BODY") or ""
+
+          # 1. Scan entire repository (code, configs, schemas, and .skills)
+          ignore_dirs = {".git", "node_modules", ".github", "dist", "build", "coverage"}
+          allowed_exts = {".js", ".ts", ".json", ".sql", ".prisma", ".md", ".yml", ".yaml"}
           context_parts = []
-          for pattern in ["package.json", "index.js", "README.md", ".skills/**/SKILL.md"]:
-              for path in glob.glob(pattern, recursive=True):
-                  if os.path.isfile(path):
-                      with open(path, "r", encoding="utf-8") as f:
-                          context_parts.append(f"--- FILE: {path} ---\n{f.read()}")
+          total_chars = 0
+
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in ignore_dirs]
+              for fname in sorted(files):
+                  if fname in {"package-lock.json", "yarn.lock"}:
+                      continue
+                  ext = os.path.splitext(fname)[1].lower()
+                  if ext in allowed_exts or fname == ".gitignore":
+                      fpath = os.path.join(root, fname).lstrip("./")
+                      try:
+                          with open(fpath, "r", encoding="utf-8") as f:
+                              content = f.read()[:6000]
+                          if total_chars + len(content) < 45000:
+                              context_parts.append(f"=== FILE: {fpath} ===\n{content}")
+                              total_chars += len(content)
+                      except Exception:
+                          pass
 
           repo_context = "\n\n".join(context_parts) or "Empty repository."
 
-          prompt = f"""You are a Senior Software Architect. A new GitHub Issue has been created.
-          Analyze the existing repository files and Skills below, then write a clear, concise Implementation Plan (do NOT write full code files yet).
+          # 2. Fetch existing issue comments (for iterative plan revisions)
+          discussion_history = ""
+          try:
+              res = subprocess.run(
+                  ["gh", "issue", "view", issue_num, "--json", "comments"],
+                  capture_output=True, text=True, check=True
+              )
+              comments = json.loads(res.stdout).get("comments", [])
+              if comments:
+                  formatted = [f"[{c['author']['login']}]: {c['body']}" for c in comments[-6:]]
+                  discussion_history = "\n\n---\n\n".join(formatted)
+          except Exception:
+              pass
 
-          Include:
-          1. Files to Create/Modify
-          2. Step-by-Step Changes (exact routes, status codes, edge cases)
-          3. Verification Plan
+          system_prompt = """You are a Principal Software Architect & Expert Backend Engineer.
+          Your job is to analyze a GitHub Issue, inspect the existing repository and `.skills/` rules, and produce a crystal-clear, production-grade Technical Implementation Plan BEFORE any code is written.
 
-          Repository Context:
+          First, assess the issue's scope (Bugfix / New API Endpoint / Database & Architecture Change) and adapt your depth accordingly.
+
+          Structure your response using these exact sections (skip or mark N/A only if genuinely irrelevant, e.g., DB schema for a pure typo fix):
+
+          ### 1. Architectural Approach & Decisions
+          - **Complexity & Scope:** (e.g., Feature / DB Integration / Refactor)
+          - **Recommended Approach & Why:** Explain the cleanest engineering approach for this codebase, trade-offs considered, and how existing working code will remain untouched.
+
+          ### 2. Data Model / Database Schema
+          - Define exact data structures, database tables/collections, column/field names, data types, defaults, validation rules, and primary/foreign keys (adapt to in-memory, JSON, SQLite, PostgreSQL, or MongoDB based on the issue and repo).
+
+          ### 3. Low-Level Design (LLD) & File-by-File Plan
+          - List exact files to **Create** vs **Modify**.
+          - Detail exact function/route names, middleware, control flow, and how `.skills/` conventions will be enforced.
+
+          ### 4. API Contract & Edge Cases
+          - Endpoint(s), HTTP Methods, Request Headers/Body JSON, Success Status & Response JSON, and Error Handling (`400`, `404`, `500` cases).
+
+          ### 5. Verification & Test Plan
+          - Exact `curl` commands or test assertions to verify the implementation works end-to-end.
+
+          Rules:
+          - Do NOT dump full code files; provide blueprints, schemas, and signatures only.
+          - If there is prior discussion/feedback in the comments, revise the previous plan to directly address the owner's feedback."""
+
+          user_prompt = f"""Repository Context:
           {repo_context}
 
-          Issue #{os.environ['ISSUE_NUMBER']}: {os.environ['ISSUE_TITLE']}
+          Issue #{issue_num}: {issue_title}
           Description:
-          {os.environ['ISSUE_BODY']}
+          {issue_body}
+
+          Previous Plan & Owner Feedback (if any):
+          {discussion_history or "None (Initial Plan)"}
           """
 
-          req = urllib.request.Request(
-              "https://openrouter.ai/api/v1/chat/completions",
-              data=json.dumps({
-                  "model": "openrouter/free",
-                  "messages": [{"role": "user", "content": prompt}]
-              }).encode("utf-8"),
-              headers={
-                  "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
-                  "Content-Type": "application/json"
-              }
+          payload = json.dumps({
+              "model": "openrouter/free",
+              "temperature": 0.2,
+              "max_tokens": 3000,
+              "messages": [
+                  {"role": "system", "content": system_prompt},
+                  {"role": "user", "content": user_prompt}
+              ]
+          }).encode("utf-8")
+
+          plan = None
+          for attempt in range(2):
+              try:
+                  req = urllib.request.Request(
+                      "https://openrouter.ai/api/v1/chat/completions",
+                      data=payload,
+                      headers={
+                          "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
+                          "Content-Type": "application/json",
+                          "HTTP-Referer": "https://github.com",
+                          "X-Title": "GitHub AI Implementation Planner"
+                      }
+                  )
+                  with urllib.request.urlopen(req, timeout=90) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                      plan = data["choices"][0]["message"]["content"]
+                      break
+              except Exception as e:
+                  if attempt == 1:
+                      plan = f"⚠️ Plan generate karne mein temporary API error aaya: `{e}`. Please thodi der baad is issue par `replan` comment karein."
+                  time.sleep(3)
+
+          comment_body = (
+              f"## 🤖 AI Implementation Plan (Principal Architect)\n\n"
+              f"{plan}\n\n"
+              f"---\n"
+              f"**Next Steps:**\n"
+              f"- ✅ Agar ye design aur schema sahi hai, toh **`/approve`** comment karein — AI coding aur PR creation shuru kar dega.\n"
+              f"- ✏️ Agar plan mein koi badlav chahiye (jaise DB choice ya schema fields), toh seedha comment mein likhein — AI plan ko update kar dega."
           )
 
-          with urllib.request.urlopen(req, timeout=60) as resp:
-              data = json.loads(resp.read().decode("utf-8"))
-              plan = data["choices"][0]["message"]["content"]
-
-          comment_body = f"### 🤖 AI Implementation Plan\n\n{plan}\n\n---\n👉 **Agar ye plan sahi hai, toh is issue par `/approve` comment karein — AI coding aur PR creation shuru kar dega.**"
           with open("/tmp/plan_comment.md", "w", encoding="utf-8") as f:
               f.write(comment_body)
           EOF
