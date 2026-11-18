@@ -8,6 +8,13 @@ A simple Express.js REST API for a To-Do application.
 
 Returns all to-dos as JSON.
 
+### GET /todos/:id
+
+Retrieves a single to‑do item by its numeric or string identifier.
+
+- Returns **HTTP 200** with the matching to‑do JSON object if found.
+- Returns **HTTP 404** with `{ "error": "Todo not found" }` if no item exists.
+
 ## Running
 
 1. Install dependencies: `npm install`
