@@ -15,6 +15,7 @@ app.get('/todos', (req, res) => {
 });
 
 app.get('/todos/:id', (req, res) => {
+  // Find a todo by its ID
   const todo = todos.find(todo => String(todo.id) === String(req.params.id));
   if (todo) {
     res.json(todo);
