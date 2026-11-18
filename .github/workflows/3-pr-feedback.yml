@@ -3,6 +3,10 @@ name: 3. AI Fix PR on Comment
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -11,9 +15,15 @@ permissions:
 jobs:
   fix-pr-feedback:
     if: |
-      github.event.issue.pull_request &&
-      github.event.comment.user.login == github.repository_owner
+      (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == github.repository_owner) ||
+        (github.event_name == 'pull_request_review' && github.event.review.user.login == github.repository_owner && github.event.review.body != '') ||
+        (github.event_name == 'pull_request_review_comment' && github.event.comment.user.login == github.repository_owner)
+      )
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-fix-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,7 +33,7 @@ jobs:
       - name: Checkout PR Branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           gh pr checkout "$PR_NUMBER"
 
@@ -40,23 +50,34 @@ jobs:
       - name: Install Aider AI Agent
         run: pip install aider-chat
 
-      - name: Resolve PR Comment with AI
+      - name: Resolve PR Comment & Review Feedback with AI
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          PR_TITLE: ${{ github.event.issue.title }}
-          REVIEW_COMMENT: ${{ github.event.comment.body }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body }}
         run: |
+          INLINE_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --jq '.[] | "- File: \(.path) (Line \(.line // .original_line)): \(.body)"' 2>/dev/null || echo "")
+          PR_INFO=$(gh pr view "$PR_NUMBER" --json title,body --jq '"\(.title)\n\(.body)"')
+
           SKILL_ARGS=""
           for file in .skills/**/SKILL.md; do
             [ -f "$file" ] && SKILL_ARGS="$SKILL_ARGS --read $file"
           done
 
-          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat_pr.md --input-history-file /tmp/input_pr.txt --message "You are an expert Node.js programmer updating an existing Pull Request based on the reviewer's feedback. Obey all SKILL.md rules and make minimal, surgical changes to resolve the comment.
+          EXISTING_FILES=$(ls *.js *.json *.md 2>/dev/null || true)
 
-          PR #$PR_NUMBER: $PR_TITLE
-          Reviewer Feedback Comment:
-          $REVIEW_COMMENT"
+          aider --model openrouter/openrouter/free --yes-always --no-git --no-suggest-shell-commands $SKILL_ARGS --chat-history-file /tmp/chat_pr.md --input-history-file /tmp/input_pr.txt --message "You are an expert Node.js programmer updating an existing Pull Request based on the reviewer's feedback. Obey all SKILL.md rules strictly. NEVER delete existing working code from main—keep all existing endpoints/documentation intact and apply only the requested changes.
+
+          PR #$PR_NUMBER Details:
+          $PR_INFO
+
+          Latest Review/Comment:
+          $LATEST_COMMENT
+
+          File-Level Inline Review Comments:
+          $INLINE_COMMENTS" $EXISTING_FILES
 
           find . -maxdepth 2 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '.gitignore' -delete
           if [ -f "index.js" ]; then
@@ -66,7 +87,7 @@ jobs:
       - name: Push Fix to Same PR Branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -77,4 +98,4 @@ jobs:
           git add -A
           git commit -m "fix: address PR review feedback"
           git push
-          gh pr comment "$PR_NUMBER" --body "✅ Aapke comment ke hisaab se code update karke isi PR branch mein push kar diya gaya hai!"
+          gh pr comment "$PR_NUMBER" --body "✅ Aapke review comments ke hisaab se code fix karke isi PR branch mein push kar diya gaya hai!"
