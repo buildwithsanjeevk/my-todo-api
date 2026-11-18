@@ -1,14 +1,12 @@
 name: 4. AI PR Code Reviewer
 
-run-name: 🔍 AI PR Review — PR #${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+run-name: 🔍 AI PR Review — PR #${{ github.event.inputs.pr_number }}
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR Number to review (e.g., 17)'
+        description: 'PR Number to review (e.g., 21)'
         required: true
         type: string
 
@@ -18,7 +16,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: pr-review-${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+  group: pr-review-${{ github.event.inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -34,7 +32,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           python3 - << 'EOF'
           import os, json, glob, time, subprocess, urllib.request
@@ -166,7 +164,6 @@ jobs:
                       raise RuntimeError(f"OpenRouter review failed: {e}")
                   time.sleep(3)
 
-          # Extract valid JSON object even if model wraps it in markdown or text
           start_idx = raw_reply.find("{")
           end_idx = raw_reply.rfind("}")
           if start_idx == -1 or end_idx == -1:
@@ -178,7 +175,6 @@ jobs:
           checklist = review.get("checklist", [])
           suggestions = review.get("suggestions", [])
 
-          # Ensure labels exist in repository
           subprocess.run(["gh", "label", "create", "approved", "--color", "0E8A16", "--description", "AI Code Review Passed", "--force"], check=False)
           subprocess.run(["gh", "label", "changes-requested", "--color", "D93F0B", "--description", "AI Code Review Suggested Changes", "--force"], check=False)
 
