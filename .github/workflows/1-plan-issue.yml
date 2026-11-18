@@ -2,7 +2,7 @@ name: 1. AI Implementation Planner
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   issues: write
