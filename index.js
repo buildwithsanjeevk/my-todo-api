@@ -11,7 +11,20 @@ let todos = [
 ];
 
 app.get('/todos', (req, res) => {
-  res.json(todos);
+  const { completed } = req.query;
+
+  if (completed === undefined) {
+    return res.json(todos);
+  }
+
+  const normalized = String(completed).trim().toLowerCase();
+  if (normalized !== 'true' && normalized !== 'false') {
+    return res.status(400).json({ error: "Invalid 'completed' query parameter. Expected 'true' or 'false'." });
+  }
+
+  const completedBool = normalized === 'true';
+  const filtered = todos.filter(todo => todo.completed === completedBool);
+  res.json(filtered);
 });
 
 app.get('/todos/:id', (req, res) => {
