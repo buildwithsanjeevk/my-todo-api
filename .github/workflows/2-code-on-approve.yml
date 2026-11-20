@@ -40,7 +40,7 @@ jobs:
 
       - name: Implement Approved Plan (Surgical & Best Practices)
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
@@ -48,6 +48,48 @@ jobs:
         run: |
           gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("AI Implementation Plan")) | .body] | last // ""' > /tmp/approved_plan.txt
           APPROVED_PLAN=$(cat /tmp/approved_plan.txt)
+
+          # Resolve active Groq coding models in priority order
+          GROQ_MODELS=$(python3 - << 'EOF'
+          import os, json, urllib.request
+
+          api_key = os.environ["GROQ_API_KEY"].strip()
+          req = urllib.request.Request(
+              "https://api.groq.com/openai/v1/models",
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "User-Agent": "GitHub-Actions-Aider-Coder/1.0"
+              }
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              models = json.loads(resp.read().decode("utf-8")).get("data", [])
+
+          excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
+          active_ids = [
+              m["id"] for m in models
+              if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+          ]
+
+          priority = [
+              "openai/gpt-oss-120b",
+              "qwen/qwen3.8-27b",
+              "openai/gpt-oss-20b",
+              "gpt-oss-120b",
+              "qwen3.8",
+              "qwen3",
+          ]
+          ordered = []
+          for kw in priority:
+              for mid in active_ids:
+                  if kw in mid.lower() and mid not in ordered:
+                      ordered.append(mid)
+          for mid in active_ids:
+              if mid not in ordered:
+                  ordered.append(mid)
+
+          print("\n".join(ordered[:3]))
+          EOF
+          )
 
           SKILL_ARGS=()
           while IFS= read -r file; do
@@ -57,19 +99,9 @@ jobs:
           EXISTING_FILES=()
           while IFS= read -r file; do
             EXISTING_FILES+=("$file")
-          done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
+          done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' ! -name 'yarn.lock' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          aider \
-            --model openrouter/openrouter/free \
-            --edit-format diff \
-            --yes-always \
-            --no-git \
-            --no-suggest-shell-commands \
-            --map-tokens 1024 \
-            "${SKILL_ARGS[@]}" \
-            --chat-history-file /tmp/chat1.md \
-            --input-history-file /tmp/input1.txt \
-            --message "You are a Senior Node.js Backend Engineer. Implement the approved plan below following industry best practices and all loaded SKILL.md rules.
+          PROMPT="You are a Senior Node.js Backend Engineer. Implement the approved plan below following industry best practices and all loaded SKILL.md rules.
 
           STRICT ENGINEERING RULES:
           1. SURGICAL DIFFS ONLY: Modify ONLY the exact lines needed for this issue. Keep the diff small, clean, and easy for a human to review.
@@ -82,7 +114,31 @@ jobs:
           $ISSUE_BODY
 
           Approved Implementation Plan:
-          $APPROVED_PLAN" "${EXISTING_FILES[@]}"
+          $APPROVED_PLAN"
+
+          SUCCESS=false
+          for MODEL_ID in $GROQ_MODELS; do
+            echo "Running Aider with groq/${MODEL_ID}..."
+            if aider \
+              --model "groq/${MODEL_ID}" \
+              --edit-format diff \
+              --yes-always \
+              --no-git \
+              --no-show-model-warnings \
+              --no-suggest-shell-commands \
+              --map-tokens 512 \
+              "${SKILL_ARGS[@]}" \
+              --chat-history-file /tmp/chat1.md \
+              --input-history-file /tmp/input1.txt \
+              --message "$PROMPT" "${EXISTING_FILES[@]}"; then
+              if [ -n "$(git status --porcelain)" ]; then
+                SUCCESS=true
+                break
+              fi
+            fi
+            echo "Model ${MODEL_ID} did not produce changes or hit an API limit, trying next..."
+            sleep 3
+          done
 
           find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '*.sql' ! -name '.gitignore' -delete
 
