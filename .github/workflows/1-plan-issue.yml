@@ -27,13 +27,51 @@ jobs:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           python3 - << 'EOF'
-          import os, json, time, urllib.request, urllib.error, subprocess
+          import os, re, json, time, urllib.request, urllib.error, subprocess
 
+          api_key = os.environ["GROQ_API_KEY"].strip()
           issue_num = os.environ["ISSUE_NUMBER"]
           issue_title = os.environ["ISSUE_TITLE"]
           issue_body = os.environ.get("ISSUE_BODY") or ""
 
-          # 1. Scan entire repository (code, configs, schemas, and .skills)
+          # 1. Fetch active chat models available on this Groq API key
+          def get_candidate_models(key):
+              req = urllib.request.Request(
+                  "https://api.groq.com/openai/v1/models",
+                  headers={
+                      "Authorization": f"Bearer {key}",
+                      "User-Agent": "GitHub-Actions-AI-Planner/1.0"
+                  }
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  models = json.loads(resp.read().decode("utf-8")).get("data", [])
+
+              excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
+              active_ids = [
+                  m["id"] for m in models
+                  if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+              ]
+
+              priority = [
+                  "openai/gpt-oss-120b",
+                  "qwen/qwen3.8-27b",
+                  "openai/gpt-oss-20b",
+                  "gpt-oss-120b",
+                  "qwen3.8",
+                  "qwen3",
+                  "llama-4",
+              ]
+              ordered = []
+              for kw in priority:
+                  for mid in active_ids:
+                      if kw in mid.lower() and mid not in ordered:
+                          ordered.append(mid)
+              for mid in active_ids:
+                  if mid not in ordered:
+                      ordered.append(mid)
+              return ordered
+
+          # 2. Scan repository (code, configs, schemas, and .skills)
           ignore_dirs = {".git", "node_modules", ".github", "dist", "build", "coverage"}
           allowed_exts = {".js", ".ts", ".json", ".sql", ".prisma", ".md", ".yml", ".yaml"}
           context_parts = []
@@ -50,7 +88,6 @@ jobs:
                       try:
                           with open(fpath, "r", encoding="utf-8") as f:
                               content = f.read()[:5000]
-                          # Keep context within Groq free tier TPM limits (~6k tokens)
                           if total_chars + len(content) < 24000:
                               context_parts.append(f"=== FILE: {fpath} ===\n{content}")
                               total_chars += len(content)
@@ -59,7 +96,7 @@ jobs:
 
           repo_context = "\n\n".join(context_parts) or "Empty repository."
 
-          # 2. Fetch existing issue comments (for iterative plan revisions)
+          # 3. Fetch existing issue comments (for iterative plan revisions)
           discussion_history = ""
           try:
               res = subprocess.run(
@@ -112,41 +149,53 @@ jobs:
           {discussion_history or "None (Initial Plan)"}
           """
 
-          payload = json.dumps({
-              "model": "llama-3.3-70b-versatile",
-              "temperature": 0.2,
-              "max_tokens": 2500,
-              "messages": [
-                  {"role": "system", "content": system_prompt},
-                  {"role": "user", "content": user_prompt}
-              ]
-          }).encode("utf-8")
-
           plan = None
-          for attempt in range(2):
-              try:
-                  req = urllib.request.Request(
-                      "https://api.groq.com/openai/v1/chat/completions",
-                      data=payload,
-                      headers={
-                          "Authorization": f"Bearer {os.environ['GROQ_API_KEY']}",
-                          "Content-Type": "application/json",
-                          "User-Agent": "GitHub-Actions-AI-Planner/1.0"
-                      }
-                  )
-                  with urllib.request.urlopen(req, timeout=90) as resp:
-                      data = json.loads(resp.read().decode("utf-8"))
-                      plan = data["choices"][0]["message"]["content"]
-                      break
-              except urllib.error.HTTPError as e:
-                  err_detail = e.read().decode("utf-8", errors="ignore")
-                  if attempt == 1:
-                      plan = f"⚠️ Groq API error ({e.code}): `{err_detail}`"
-                  time.sleep(5)
-              except Exception as e:
-                  if attempt == 1:
-                      plan = f"⚠️ Plan generate karne mein temporary API error aaya: `{e}`. Please thodi der baad is issue par `replan` comment karein."
-                  time.sleep(3)
+          last_error = ""
+
+          try:
+              candidates = get_candidate_models(api_key)
+              if not candidates:
+                  raise RuntimeError("No active chat models available on this Groq API key.")
+
+              for model_id in candidates[:3]:
+                  print(f"Trying Groq model: {model_id}")
+                  payload = json.dumps({
+                      "model": model_id,
+                      "temperature": 0.2,
+                      "max_tokens": 4096,
+                      "messages": [
+                          {"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_prompt}
+                      ]
+                  }).encode("utf-8")
+
+                  try:
+                      req = urllib.request.Request(
+                          "https://api.groq.com/openai/v1/chat/completions",
+                          data=payload,
+                          headers={
+                              "Authorization": f"Bearer {api_key}",
+                              "Content-Type": "application/json",
+                              "User-Agent": "GitHub-Actions-AI-Planner/1.0"
+                          }
+                      )
+                      with urllib.request.urlopen(req, timeout=90) as resp:
+                          data = json.loads(resp.read().decode("utf-8"))
+                          raw_content = data["choices"][0]["message"]["content"]
+                          plan = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+                          break
+                  except urllib.error.HTTPError as e:
+                      err_detail = e.read().decode("utf-8", errors="ignore")
+                      last_error = f"Groq API error ({e.code}) on `{model_id}`: `{err_detail}`"
+                      time.sleep(3)
+                  except Exception as e:
+                      last_error = f"Request error on `{model_id}`: `{e}`"
+                      time.sleep(3)
+          except Exception as e:
+              last_error = str(e)
+
+          if not plan:
+              plan = f"⚠️ {last_error}"
 
           comment_body = (
               f"## 🤖 AI Implementation Plan (Principal Architect)\n\n"
