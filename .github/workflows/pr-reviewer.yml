@@ -30,13 +30,14 @@ jobs:
 
       - name: Run AI Code Review & Apply Verdict Label
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           python3 - << 'EOF'
-          import os, json, glob, time, subprocess, urllib.request
+          import os, re, json, glob, time, subprocess, urllib.request, urllib.error
 
+          api_key = os.environ["GROQ_API_KEY"].strip()
           pr_num = os.environ["PR_NUMBER"]
 
           def run_cmd(cmd):
@@ -45,14 +46,50 @@ jobs:
                   raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
               return res.stdout
 
-          # 1. Fetch PR metadata and diff
+          # 1. Fetch active chat models available on this Groq API key
+          def get_candidate_models(key):
+              req = urllib.request.Request(
+                  "https://api.groq.com/openai/v1/models",
+                  headers={
+                      "Authorization": f"Bearer {key}",
+                      "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
+                  }
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  models = json.loads(resp.read().decode("utf-8")).get("data", [])
+
+              excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
+              active_ids = [
+                  m["id"] for m in models
+                  if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+              ]
+
+              priority = [
+                  "openai/gpt-oss-120b",
+                  "qwen/qwen3.8-27b",
+                  "openai/gpt-oss-20b",
+                  "gpt-oss-120b",
+                  "qwen3.8",
+                  "qwen3",
+              ]
+              ordered = []
+              for kw in priority:
+                  for mid in active_ids:
+                      if kw in mid.lower() and mid not in ordered:
+                          ordered.append(mid)
+              for mid in active_ids:
+                  if mid not in ordered:
+                      ordered.append(mid)
+              return ordered
+
+          # 2. Fetch PR metadata and diff
           pr_json = json.loads(run_cmd([
               "gh", "pr", "view", pr_num,
               "--json", "title,body,headRefName,baseRefName,files,closingIssuesReferences"
           ]))
           pr_diff = run_cmd(["gh", "pr", "diff", pr_num])
 
-          # 2. Fetch full details of linked issues safely
+          # 3. Fetch full details of linked issues safely
           linked_issue_blocks = []
           for ref in pr_json.get("closingIssuesReferences", []):
               inum = str(ref.get("number", ""))
@@ -68,7 +105,7 @@ jobs:
                       )
           linked_issues = "\n\n".join(linked_issue_blocks) or "None linked."
 
-          # 3. Load repository .skills/ standards
+          # 4. Load repository .skills/ standards
           skills_text = []
           for path in sorted(glob.glob(".skills/**/SKILL.md", recursive=True)):
               if os.path.isfile(path):
@@ -76,7 +113,7 @@ jobs:
                       skills_text.append(f"=== {path} ===\n{f.read()}")
           skills_context = "\n\n".join(skills_text) or "No custom SKILL.md files found."
 
-          # 4. Read full content of changed files from PR branch for complete context
+          # 5. Read full content of changed files from PR branch for complete context
           head_ref = pr_json["headRefName"]
           run_cmd(["git", "fetch", "origin", head_ref])
           changed_files_content = []
@@ -87,7 +124,7 @@ jobs:
                   capture_output=True, text=True
               )
               if show_res.returncode == 0:
-                  changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:8000]}")
+                  changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:5000]}")
 
           system_prompt = """You are a Principal Code Reviewer performing a strict, helpful Pull Request review.
           Evaluate the PR diff and full changed files against:
@@ -123,46 +160,59 @@ jobs:
           {linked_issues}
 
           Repository Agent Skills:
-          {skills_context}
+          {skills_context[:4000]}
 
           Git Diff:
-          {pr_diff[:18000]}
+          {pr_diff[:11000]}
 
           Full Changed Files (for context):
-          {chr(10).join(changed_files_content)[:18000]}
+          {chr(10).join(changed_files_content)[:11000]}
           """
 
-          payload = json.dumps({
-              "model": "openrouter/free",
-              "temperature": 0.1,
-              "max_tokens": 2500,
-              "messages": [
-                  {"role": "system", "content": system_prompt},
-                  {"role": "user", "content": user_prompt}
-              ]
-          }).encode("utf-8")
+          candidates = get_candidate_models(api_key)
+          if not candidates:
+              raise RuntimeError("No active chat models available on this Groq API key.")
 
           raw_reply = None
-          for attempt in range(2):
+          last_error = ""
+
+          for model_id in candidates[:3]:
+              print(f"Reviewing PR with Groq model: {model_id}")
+              payload = json.dumps({
+                  "model": model_id,
+                  "temperature": 0.1,
+                  "max_tokens": 3000,
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt}
+                  ]
+              }).encode("utf-8")
+
               try:
                   req = urllib.request.Request(
-                      "https://openrouter.ai/api/v1/chat/completions",
+                      "https://api.groq.com/openai/v1/chat/completions",
                       data=payload,
                       headers={
-                          "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
+                          "Authorization": f"Bearer {api_key}",
                           "Content-Type": "application/json",
-                          "HTTP-Referer": "https://github.com",
-                          "X-Title": "GitHub AI PR Reviewer"
+                          "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
                       }
                   )
                   with urllib.request.urlopen(req, timeout=90) as resp:
                       data = json.loads(resp.read().decode("utf-8"))
-                      raw_reply = data["choices"][0]["message"]["content"].strip()
+                      content = data["choices"][0]["message"]["content"]
+                      raw_reply = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
                       break
-              except Exception as e:
-                  if attempt == 1:
-                      raise RuntimeError(f"OpenRouter review failed: {e}")
+              except urllib.error.HTTPError as e:
+                  err_detail = e.read().decode("utf-8", errors="ignore")
+                  last_error = f"Groq API error ({e.code}) on `{model_id}`: {err_detail}"
                   time.sleep(3)
+              except Exception as e:
+                  last_error = f"Request error on `{model_id}`: {e}"
+                  time.sleep(3)
+
+          if not raw_reply:
+              raise RuntimeError(f"Groq review failed: {last_error}")
 
           start_idx = raw_reply.find("{")
           end_idx = raw_reply.rfind("}")
