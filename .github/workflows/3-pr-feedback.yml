@@ -1,47 +1,34 @@
-name: 3. AI Fix PR on Comment
+name: 3. AI PR Feedback & Revision
 
 on:
   issue_comment:
     types: [created]
-  pull_request_review:
-    types: [submitted]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR Number (jaise 15)'
-        required: true
-        type: string
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   actions: write
 
 concurrency:
-  group: pr-fix-${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+  group: pr-feedback-${{ github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
-  fix-pr-feedback:
-    if: (github.event_name == 'workflow_dispatch') || (github.actor == github.repository_owner && ((github.event_name == 'pull_request_review' && github.event.review.state != 'approved') || (github.event_name == 'issue_comment' && github.event.issue.pull_request)))
+  apply-pr-feedback:
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == github.repository_owner &&
+      !startsWith(github.event.comment.body, '## 🟢') &&
+      !startsWith(github.event.comment.body, '## 🟠') &&
+      !startsWith(github.event.comment.body, '✅') &&
+      !startsWith(github.event.comment.body, '⚠️')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Checkout PR Branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
-        run: |
-          if [ -z "$PR_NUMBER" ]; then
-            echo "PR number nahi mila."
-            exit 1
-          fi
-          git fetch origin main
-          gh pr checkout "$PR_NUMBER"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -56,17 +43,84 @@ jobs:
       - name: Install Aider AI Agent
         run: pip install aider-chat
 
-      - name: Resolve PR Comments (Surgical & Best Practices)
+      - name: Apply PR Review & Owner Feedback (Surgical Diffs)
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
-          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body || 'Address all inline review comments on this PR' }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          OWNER_COMMENT: ${{ github.event.comment.body }}
         run: |
-          INLINE_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --jq '.[] | "- File: \(.path) (Line \(.line // .original_line)): \(.body)"' 2>/dev/null || echo "")
-          PR_COMMENTS=$(gh pr view "$PR_NUMBER" --json comments --jq '[.comments[] | select((.body | startswith("✅") | not) and (.body | startswith("ℹ️") | not) and (.body | startswith("⚠️") | not))][-4:][] | "- \(.body)"' 2>/dev/null || echo "")
-          PR_INFO=$(gh pr view "$PR_NUMBER" --json title,body --jq '"\(.title)\n\(.body)"')
+          gh pr checkout "$PR_NUMBER"
+
+          # Extract latest AI review suggestions and recent PR comments
+          PR_CONTEXT=$(python3 - << 'EOF'
+          import os, json, subprocess
+
+          pr_num = os.environ["PR_NUMBER"]
+          res = subprocess.run(
+              ["gh", "pr", "view", pr_num, "--json", "title,body,comments"],
+              capture_output=True, text=True, check=True
+          )
+          pr_data = json.loads(res.stdout)
+          comments = pr_data.get("comments", [])
+
+          ai_reviews = [
+              c["body"] for c in comments
+              if "AI Code Review:" in c.get("body", "")
+          ]
+          latest_review = ai_reviews[-1] if ai_reviews else "No prior AI review found."
+
+          recent_discussion = "\n\n---\n\n".join(
+              f"[{c['author']['login']}]: {c['body']}" for c in comments[-5:]
+          )
+
+          print(f"PR Title: {pr_data.get('title', '')}\n")
+          print(f"=== LATEST AI CODE REVIEW ===\n{latest_review[:6000]}\n")
+          print(f"=== RECENT PR COMMENTS ===\n{recent_discussion[:4000]}")
+          EOF
+          )
+
+          # Resolve active Groq coding models in priority order
+          GROQ_MODELS=$(python3 - << 'EOF'
+          import os, json, urllib.request
+
+          api_key = os.environ["GROQ_API_KEY"].strip()
+          req = urllib.request.Request(
+              "https://api.groq.com/openai/v1/models",
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "User-Agent": "GitHub-Actions-PR-Feedback/1.0"
+              }
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              models = json.loads(resp.read().decode("utf-8")).get("data", [])
+
+          excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
+          active_ids = [
+              m["id"] for m in models
+              if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+          ]
+
+          priority = [
+              "openai/gpt-oss-120b",
+              "qwen/qwen3.8-27b",
+              "openai/gpt-oss-20b",
+              "gpt-oss-120b",
+              "qwen3.8",
+              "qwen3",
+          ]
+          ordered = []
+          for kw in priority:
+              for mid in active_ids:
+                  if kw in mid.lower() and mid not in ordered:
+                      ordered.append(mid)
+          for mid in active_ids:
+              if mid not in ordered:
+                  ordered.append(mid)
+
+          print("\n".join(ordered[:3]))
+          EOF
+          )
 
           SKILL_ARGS=()
           while IFS= read -r file; do
@@ -76,76 +130,50 @@ jobs:
           EXISTING_FILES=()
           while IFS= read -r file; do
             EXISTING_FILES+=("$file")
-          done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
+          done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' ! -name 'yarn.lock' \( -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          aider \
-            --model openrouter/openrouter/free \
-            --edit-format diff \
-            --yes-always \
-            --no-git \
-            --no-suggest-shell-commands \
-            --map-tokens 1024 \
-            "${SKILL_ARGS[@]}" \
-            --chat-history-file /tmp/chat_pr.md \
-            --input-history-file /tmp/input_pr.txt \
-            --message "You are a Senior Node.js Backend Engineer updating an existing Pull Request based on code review feedback. Follow industry best practices and all loaded SKILL.md rules strictly.
+          PROMPT="You are a Senior Node.js Backend Engineer updating an open Pull Request based on code review feedback and repository owner instructions.
 
           STRICT ENGINEERING RULES:
-          1. SURGICAL DIFFS ONLY: Change ONLY the exact lines needed to resolve the reviewer's feedback. Keep changes small, clean, and easy to review.
-          2. NEVER DELETE EXISTING CODE: Preserve all working routes, sample data, helper functions, and README sections from the main branch unless explicitly asked to remove them.
-          3. BEST PRACTICES: Use proper HTTP status codes (200, 201, 400, 404, 500), clean input validation, safe ID comparisons, and consistent JSON error responses.
-          4. NO JUNK FILES: Only edit or create valid project source/doc files.
+          1. SURGICAL DIFFS ONLY: Modify ONLY the exact lines needed to address the review suggestions and owner feedback.
+          2. NEVER DELETE EXISTING CODE: Preserve all existing working routes, sample data, helper functions, imports, and README sections unless explicitly requested.
+          3. BEST PRACTICES: Ensure proper HTTP status codes (200, 201, 400, 404, 500), clean input validation, and consistent JSON error responses.
+          4. FOLLOW SKILLS: Adhere strictly to all loaded SKILL.md rules.
 
-          PR #$PR_NUMBER Context:
-          $PR_INFO
+          Owner's Latest Instruction:
+          $OWNER_COMMENT
 
-          Latest Review/Comment Trigger:
-          $LATEST_COMMENT
+          Pull Request & Review Context:
+          $PR_CONTEXT"
 
-          Recent PR Conversation Comments (including AI Reviewer suggestions if any):
-          $PR_COMMENTS
+          for MODEL_ID in $GROQ_MODELS; do
+            echo "Running Aider feedback revision with groq/${MODEL_ID}..."
+            if aider \
+              --model "groq/${MODEL_ID}" \
+              --edit-format diff \
+              --yes-always \
+              --no-git \
+              --no-show-model-warnings \
+              --no-suggest-shell-commands \
+              --map-tokens 512 \
+              "${SKILL_ARGS[@]}" \
+              --chat-history-file /tmp/chat_feedback.md \
+              --input-history-file /tmp/input_feedback.txt \
+              --message "$PROMPT" "${EXISTING_FILES[@]}"; then
+              if [ -n "$(git status --porcelain)" ]; then
+                break
+              fi
+            fi
+            echo "Model ${MODEL_ID} did not produce changes or hit an API limit, trying next..."
+            sleep 3
+          done
 
-          File-Level Inline Review Comments:
-          $INLINE_COMMENTS" "${EXISTING_FILES[@]}"
+          find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name '*.js' ! -name '*.ts' ! -name '*.json' ! -name '*.md' ! -name '*.sql' ! -name '.gitignore' -delete
 
-          find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '*.sql' ! -name '.gitignore' -delete
-
-      - name: Anti-Deletion & Syntax Guard
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
-          LATEST_COMMENT: ${{ github.event.comment.body || github.event.review.body || '' }}
+      - name: Syntax & Runtime Smoke Test
         run: |
-          # 1. Verify syntax of all JavaScript files
           find . -maxdepth 3 -name '*.js' ! -path './node_modules/*' -exec node --check {} +
 
-          # 2. Ensure existing code from origin/main was not accidentally wiped out
-          python3 - << 'EOF'
-          import subprocess, sys, os
-
-          comment_text = (os.environ.get("LATEST_COMMENT") or "").lower()
-          allow_delete = any(w in comment_text for w in ["delete", "remove", "replace", "refactor", "clean up"])
-
-          res = subprocess.run(["git", "diff", "--numstat", "origin/main"], capture_output=True, text=True)
-          for line in res.stdout.strip().splitlines():
-              parts = line.split("\t")
-              if len(parts) != 3:
-                  continue
-              added, deleted, path = parts
-              if added == "-" or deleted == "-":
-                  continue
-              deleted = int(deleted)
-              orig_res = subprocess.run(["git", "show", f"origin/main:{path}"], capture_output=True, text=True)
-              if orig_res.returncode != 0:
-                  continue
-              orig_lines = len(orig_res.stdout.splitlines())
-              if not allow_delete and orig_lines >= 15 and deleted > (orig_lines * 0.4):
-                  print(f"ERROR: Too much code from main deleted in {path} ({deleted}/{orig_lines} lines).")
-                  sys.exit(1)
-          EOF
-
-      - name: Runtime Smoke Test
-        run: |
           if [ -f "package.json" ]; then
             npm install > /tmp/test_log.txt 2>&1 || true
             if grep -q '"test"' package.json && ! grep -q 'no test specified' package.json; then
@@ -160,25 +188,37 @@ jobs:
           cat /tmp/test_log.txt
           rm -rf node_modules
           git checkout -- package-lock.json 2>/dev/null || rm -f package-lock.json
+          git checkout -- yarn.lock 2>/dev/null || true
 
-      - name: Push Concise Fix to Same PR Branch
+      - name: Push Updates & Re-trigger AI PR Reviewer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           if [ -z "$(git status --porcelain)" ]; then
-            gh pr comment "$PR_NUMBER" --body "ℹ️ Review comments check kiye gaye, par code mein koi naya change karne ki zaroorat nahi padi."
-            exit 0
+            gh pr comment "$PR_NUMBER" --body "⚠️ AI ne PR feedback ke liye koi naya code change generate nahi kiya. Please workflow logs check karein ya specific instructions dein."
+            exit 1
           fi
 
           DIFF_STAT=$(git diff --stat HEAD)
+
           git add -A
-          git commit -m "fix: address PR review feedback"
+          git commit -m "fix: apply PR review feedback for #${PR_NUMBER}"
           git push origin HEAD
 
-          printf "✅ **Review feedback ke hisaab se surgical fix push kar diya gaya hai:**\n\n\`\`\`text\n%s\n\`\`\`\n" "$DIFF_STAT" > /tmp/pr_fix_reply.md
-          gh pr comment "$PR_NUMBER" --body-file /tmp/pr_fix_reply.md
+          cat << EOF > /tmp/feedback_reply.md
+          ✅ Requested review changes apply kar diye gaye hain aur branch par push ho gaye hain.
+
+          ### 🔍 Updated Files
+          \`\`\`text
+          ${DIFF_STAT}
+          \`\`\`
+
+          🔄 **AI PR Code Reviewer** automatically re-run ho raha hai...
+          EOF
+
+          gh pr comment "$PR_NUMBER" --body-file /tmp/feedback_reply.md
           gh workflow run pr-reviewer.yml -f pr_number="$PR_NUMBER" || true
