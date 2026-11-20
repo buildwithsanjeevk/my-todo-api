@@ -20,14 +20,14 @@ jobs:
 
       - name: Generate Principal-Level Architecture & LLD Plan
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           python3 - << 'EOF'
-          import os, json, time, urllib.request, subprocess
+          import os, json, time, urllib.request, urllib.error, subprocess
 
           issue_num = os.environ["ISSUE_NUMBER"]
           issue_title = os.environ["ISSUE_TITLE"]
@@ -49,8 +49,9 @@ jobs:
                       fpath = os.path.join(root, fname).lstrip("./")
                       try:
                           with open(fpath, "r", encoding="utf-8") as f:
-                              content = f.read()[:6000]
-                          if total_chars + len(content) < 45000:
+                              content = f.read()[:5000]
+                          # Keep context within Groq free tier TPM limits (~6k tokens)
+                          if total_chars + len(content) < 24000:
                               context_parts.append(f"=== FILE: {fpath} ===\n{content}")
                               total_chars += len(content)
                       except Exception:
@@ -112,9 +113,9 @@ jobs:
           """
 
           payload = json.dumps({
-              "model": "openrouter/free",
+              "model": "llama-3.3-70b-versatile",
               "temperature": 0.2,
-              "max_tokens": 3000,
+              "max_tokens": 2500,
               "messages": [
                   {"role": "system", "content": system_prompt},
                   {"role": "user", "content": user_prompt}
@@ -125,19 +126,23 @@ jobs:
           for attempt in range(2):
               try:
                   req = urllib.request.Request(
-                      "https://openrouter.ai/api/v1/chat/completions",
+                      "https://api.groq.com/openai/v1/chat/completions",
                       data=payload,
                       headers={
-                          "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
+                          "Authorization": f"Bearer {os.environ['GROQ_API_KEY']}",
                           "Content-Type": "application/json",
-                          "HTTP-Referer": "https://github.com",
-                          "X-Title": "GitHub AI Implementation Planner"
+                          "User-Agent": "GitHub-Actions-AI-Planner/1.0"
                       }
                   )
                   with urllib.request.urlopen(req, timeout=90) as resp:
                       data = json.loads(resp.read().decode("utf-8"))
                       plan = data["choices"][0]["message"]["content"]
                       break
+              except urllib.error.HTTPError as e:
+                  err_detail = e.read().decode("utf-8", errors="ignore")
+                  if attempt == 1:
+                      plan = f"⚠️ Groq API error ({e.code}): `{err_detail}`"
+                  time.sleep(5)
               except Exception as e:
                   if attempt == 1:
                       plan = f"⚠️ Plan generate karne mein temporary API error aaya: `{e}`. Please thodi der baad is issue par `replan` comment karein."
