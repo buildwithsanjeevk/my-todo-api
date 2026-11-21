@@ -1,4 +1,4 @@
-name: 3. AI PR Feedback & Revision
+name: 4. AI PR Feedback & Revision
 
 on:
   issue_comment:
@@ -26,12 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -80,49 +80,88 @@ jobs:
           EOF
           )
 
-          # Resolve active NVIDIA chat models in priority order
+          # Resolve and verify fast, active NVIDIA NIM chat/coding models
           NVIDIA_MODELS=$(python3 - << 'EOF'
-          import os, json, urllib.request
+          import os, sys, json, urllib.request
 
           api_key = os.environ["NVIDIA_API_KEY"].strip()
-          req = urllib.request.Request(
-              "https://integrate.api.nvidia.com/v1/models",
-              headers={
-                  "Authorization": f"Bearer {api_key}",
-                  "User-Agent": "GitHub-Actions-PR-Feedback/1.0"
-              }
-          )
-          with urllib.request.urlopen(req, timeout=30) as resp:
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+              "User-Agent": "GitHub-Actions-PR-Feedback/1.0"
+          }
+
+          req = urllib.request.Request("https://integrate.api.nvidia.com/v1/models", headers=headers)
+          with urllib.request.urlopen(req, timeout=20) as resp:
               models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
-          excluded = ("whisper", "tts", "guard", "safeguard", "embed", "rerank", "vision", "vlm")
-          active_ids = [
-              m["id"] for m in models
-              if not any(x in m["id"].lower() for x in excluded)
-          ]
+          available_ids = [m["id"] for m in models if m.get("id")]
 
-          priority = [
-              "openai/gpt-oss",
-              "qwen/qwen3",
-              "qwen3",
+          excluded = (
+              "starcoder", "codegemma", "embed", "rerank", "guard", "safeguard",
+              "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
+              "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
+              "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
+              "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t", "550b", "ultra"
+          )
+
+          priority_keywords = [
+              "qwen/qwen2.5-coder-32b-instruct",
+              "meta/llama-3.3-70b-instruct",
+              "nvidia/llama-3.3-nemotron-super-49b",
+              "nvidia/llama-3.1-nemotron-70b-instruct",
+              "qwen/qwen2.5-72b-instruct",
+              "mistralai/mistral-large-2-instruct",
+              "qwen2.5-coder",
               "llama-3.3-70b",
+              "nemotron-3.5-bolt",
               "nemotron",
+              "qwen/qwen3",
+              "deepseek",
           ]
-          ordered = []
-          for kw in priority:
-              for mid in active_ids:
-                  if kw in mid.lower() and mid not in ordered:
-                      ordered.append(mid)
-          for mid in active_ids:
-              if mid not in ordered:
-                  ordered.append(mid)
 
-          print("\n".join(ordered[:3]))
+          ordered = []
+          for kw in priority_keywords:
+              for mid in available_ids:
+                  low = mid.lower()
+                  if kw in low and not any(x in low for x in excluded) and mid not in ordered:
+                      ordered.append(mid)
+
+          for mid in available_ids:
+              low = mid.lower()
+              if any(tag in low for tag in ("instruct", "chat")) and not any(x in low for x in excluded):
+                  if mid not in ordered:
+                      ordered.append(mid)
+
+          verified = []
+          for mid in ordered[:8]:
+              probe_payload = json.dumps({
+                  "model": mid,
+                  "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}]
+              }).encode("utf-8")
+              try:
+                  probe_req = urllib.request.Request(
+                      "https://integrate.api.nvidia.com/v1/chat/completions",
+                      data=probe_payload,
+                      headers=headers
+                  )
+                  with urllib.request.urlopen(probe_req, timeout=15) as p_resp:
+                      if p_resp.status == 200:
+                          verified.append(mid)
+                          print(f"Verified NIM model: {mid}", file=sys.stderr)
+                          if len(verified) == 3:
+                              break
+              except Exception as e:
+                  print(f"Skipping NIM model {mid}: {e}", file=sys.stderr)
+
+          print("\n".join(verified))
           EOF
           )
 
           if [ -z "$NVIDIA_MODELS" ]; then
-            echo "ERROR: No NVIDIA NIM chat models resolved."
+            echo "ERROR: No working NVIDIA NIM chat models resolved."
             exit 1
           fi
 
@@ -179,18 +218,18 @@ jobs:
               fi
             fi
             echo "Model ${MODEL_ID} did not produce changes or hit an API limit, trying next..."
-            sleep 3
+            sleep 2
           done
-
 
       - name: Syntax & Runtime Smoke Test
         run: |
           find . -maxdepth 3 -name '*.js' ! -path './node_modules/*' -exec node --check {} +
 
+          TEST_EXIT=0
           if [ -f "package.json" ]; then
             npm install > /tmp/test_log.txt 2>&1 || true
             if grep -q '"test"' package.json && ! grep -q 'no test specified' package.json; then
-              npm test >> /tmp/test_log.txt 2>&1 || true
+              npm test >> /tmp/test_log.txt 2>&1 || TEST_EXIT=$?
             fi
             timeout 8s npm start >> /tmp/test_log.txt 2>&1 &
             SERVER_PID=$!
@@ -202,6 +241,10 @@ jobs:
           rm -rf node_modules
           git checkout -- package-lock.json 2>/dev/null || rm -f package-lock.json
           git checkout -- yarn.lock 2>/dev/null || true
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            echo "ERROR: Automated tests (npm test) failed!"
+            exit $TEST_EXIT
+          fi
 
       - name: Push Updates & Re-trigger AI PR Reviewer
         env:
@@ -235,3 +278,80 @@ jobs:
 
           gh pr comment "$PR_NUMBER" --body-file /tmp/feedback_reply.md
           gh workflow run pr-reviewer.yml -f pr_number="$PR_NUMBER" || true
+
+      - name: Send Slack Status Alert
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || 'N/A' }}
+          PR_TITLE: ${{ github.event.issue.title || 'No Title' }}
+          PR_URL: ${{ github.event.issue.html_url || '' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL secret is not set. Skipping Slack notification."
+            exit 0
+          fi
+
+          python3 - << 'EOF'
+          import os, json, urllib.request
+
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"].strip()
+          status = os.environ["JOB_STATUS"]
+          repo = os.environ["REPO_NAME"]
+          wf = os.environ["WORKFLOW_NAME"]
+          pr_num = os.environ["PR_NUMBER"]
+          pr_title = os.environ["PR_TITLE"]
+          pr_url = os.environ["PR_URL"].strip() or f"https://github.com/{repo}/pull/{pr_num}"
+          run_url = os.environ["RUN_URL"]
+
+          is_ok = (status == "success")
+          color = "#2eb886" if is_ok else "#a30200"
+          title = f"✅ PR #{pr_num} Updated with Feedback" if is_ok else f"❌ PR Feedback Revision Failed ({status})"
+
+          payload = json.dumps({
+              "text": f"{title} — {repo} (PR #{pr_num})",
+              "attachments": [{
+                  "color": color,
+                  "blocks": [
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": f"*{title}*\n*Repo:* `{repo}`\n*Workflow:* {wf}\n*PR:* #{pr_num} — {pr_title}"
+                          }
+                      },
+                      {
+                          "type": "actions",
+                          "elements": [
+                              {
+                                  "type": "button",
+                                  "style": "primary",
+                                  "text": {"type": "plain_text", "text": "Open Pull Request"},
+                                  "url": pr_url
+                              },
+                              {
+                                  "type": "button",
+                                  "text": {"type": "plain_text", "text": "View Action Logs"},
+                                  "url": run_url
+                              }
+                          ]
+                      }
+                  ]
+              }]
+          }).encode("utf-8")
+
+          try:
+              req = urllib.request.Request(
+                  webhook_url,
+                  data=payload,
+                  headers={"Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  print("Slack notification sent:", resp.status)
+          except Exception as e:
+              print("Slack notification failed (non-blocking):", e)
+          EOF
