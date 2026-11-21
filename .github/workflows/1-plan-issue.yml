@@ -34,7 +34,7 @@ jobs:
           issue_title = os.environ["ISSUE_TITLE"]
           issue_body = os.environ.get("ISSUE_BODY") or ""
 
-          # 1. Fetch active chat/coding models available on NVIDIA NIM
+          # 1. Fetch active chat/instruct models available on NVIDIA NIM
           def get_candidate_models(key):
               req = urllib.request.Request(
                   "https://integrate.api.nvidia.com/v1/models",
@@ -50,23 +50,27 @@ jobs:
               available_ids = [m["id"] for m in models if m.get("id")]
 
               excluded = (
-                  "embed", "rerank", "guard", "safeguard", "reward", "parse", "ocr",
-                  "vlm", "vision", "clip", "deplot", "kosmos", "neva", "paligemma",
-                  "whisper", "tts", "asr", "riva", "canary", "parakeet", "vila",
-                  "stable-diffusion", "flux", "sdxl", "cosyvoice", "bge-"
+                  "starcoder", "codegemma", "embed", "rerank", "guard", "safeguard",
+                  "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
+                  "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
+                  "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
+                  "cosyvoice", "bge-", "safety", "shield"
               )
 
               priority_keywords = [
+                  "qwen/qwen3",
                   "qwen/qwen2.5-coder-32b-instruct",
-                  "qwen/qwen3-235b",
+                  "deepseek-ai/deepseek-v4",
                   "deepseek-ai/deepseek-v3",
                   "meta/llama-3.3-70b-instruct",
+                  "nvidia/llama-3.3-nemotron",
                   "nvidia/llama-3.1-nemotron-70b-instruct",
-                  "mistralai/mistral-large-2-instruct",
-                  "qwen/qwq-32b",
-                  "deepseek-ai/deepseek-r1",
+                  "mistralai/mistral-large",
+                  "openai/gpt-oss",
                   "qwen2.5-coder",
                   "llama-3.3-70b",
+                  "nemotron",
+                  "deepseek",
               ]
 
               ordered = []
@@ -78,7 +82,7 @@ jobs:
 
               for mid in available_ids:
                   low = mid.lower()
-                  if any(tag in low for tag in ("instruct", "chat", "coder")) and not any(x in low for x in excluded):
+                  if any(tag in low for tag in ("instruct", "chat")) and not any(x in low for x in excluded):
                       if mid not in ordered:
                           ordered.append(mid)
 
@@ -170,7 +174,7 @@ jobs:
               if not candidates:
                   raise RuntimeError("No active chat models available on this NVIDIA NIM API key.")
 
-              for model_id in candidates[:3]:
+              for model_id in candidates[:10]:
                   print(f"Trying NVIDIA NIM model: {model_id}")
                   payload = json.dumps({
                       "model": model_id,
@@ -204,10 +208,11 @@ jobs:
                   except urllib.error.HTTPError as e:
                       err_detail = e.read().decode("utf-8", errors="ignore")
                       last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: `{err_detail}`"
-                      time.sleep(3)
+                      if e.code != 404:
+                          time.sleep(3)
                   except Exception as e:
                       last_error = f"Request error on `{model_id}`: `{e}`"
-                      time.sleep(3)
+                      time.sleep(2)
           except Exception as e:
               last_error = str(e)
 
