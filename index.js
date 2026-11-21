@@ -6,6 +6,14 @@ const port = 3000;
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocument = require('./docs/openapi.json');
 
+const dynamicSwagger = { ...swaggerDocument };
+dynamicSwagger.servers = [
+  {
+    url: process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000',
+    description: process.env.RENDER_EXTERNAL_URL ? 'Production (Render)' : 'Local development'
+  }
+];
+
 let todos = [
   { id: 1, title: "Learn Express", completed: false },
   { id: 2, title: "Build a To-Do API", completed: true },
@@ -62,7 +70,7 @@ app.post('/api/todos', (req, res) => {
   return res.status(201).json(newTodo);
 });
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(dynamicSwagger));
 
 if (require.main === module) {
   app.listen(port, () => {
