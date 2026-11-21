@@ -40,7 +40,7 @@ jobs:
 
       - name: Implement Approved Plan (Surgical & Best Practices)
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
@@ -49,47 +49,92 @@ jobs:
           gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("AI Implementation Plan")) | .body] | last // ""' > /tmp/approved_plan.txt
           APPROVED_PLAN=$(cat /tmp/approved_plan.txt)
 
-          # Resolve active Groq coding models in priority order
-          GROQ_MODELS=$(python3 - << 'EOF'
-          import os, json, urllib.request
+          # Resolve and verify active NVIDIA NIM chat/coding models
+          NVIDIA_MODELS=$(python3 - << 'EOF'
+          import os, sys, json, urllib.request, urllib.error
 
-          api_key = os.environ["GROQ_API_KEY"].strip()
-          req = urllib.request.Request(
-              "https://api.groq.com/openai/v1/models",
-              headers={
-                  "Authorization": f"Bearer {api_key}",
-                  "User-Agent": "GitHub-Actions-Aider-Coder/1.0"
-              }
-          )
+          api_key = os.environ["NVIDIA_API_KEY"].strip()
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+              "User-Agent": "GitHub-Actions-Aider-Coder/1.0"
+          }
+
+          req = urllib.request.Request("https://integrate.api.nvidia.com/v1/models", headers=headers)
           with urllib.request.urlopen(req, timeout=30) as resp:
               models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
-          excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
-          active_ids = [
-              m["id"] for m in models
-              if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+          available_ids = [m["id"] for m in models if m.get("id")]
+
+          excluded = (
+              "starcoder", "codegemma", "embed", "rerank", "guard", "safeguard",
+              "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
+              "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
+              "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
+              "cosyvoice", "bge-", "safety", "shield"
+          )
+
+          priority_keywords = [
+              "qwen/qwen2.5-coder-32b-instruct",
+              "qwen/qwen3",
+              "deepseek-ai/deepseek-v4",
+              "deepseek-ai/deepseek-v3",
+              "meta/llama-3.3-70b-instruct",
+              "nvidia/llama-3.3-nemotron",
+              "nvidia/llama-3.1-nemotron-70b-instruct",
+              "mistralai/mistral-large",
+              "openai/gpt-oss",
+              "qwen2.5-coder",
+              "llama-3.3-70b",
+              "nemotron",
+              "deepseek",
           ]
 
-          priority = [
-              "openai/gpt-oss-120b",
-              "qwen/qwen3.8-27b",
-              "openai/gpt-oss-20b",
-              "gpt-oss-120b",
-              "qwen3.8",
-              "qwen3",
-          ]
           ordered = []
-          for kw in priority:
-              for mid in active_ids:
-                  if kw in mid.lower() and mid not in ordered:
+          for kw in priority_keywords:
+              for mid in available_ids:
+                  low = mid.lower()
+                  if kw in low and not any(x in low for x in excluded) and mid not in ordered:
                       ordered.append(mid)
-          for mid in active_ids:
-              if mid not in ordered:
-                  ordered.append(mid)
 
-          print("\n".join(ordered[:3]))
+          for mid in available_ids:
+              low = mid.lower()
+              if any(tag in low for tag in ("instruct", "chat")) and not any(x in low for x in excluded):
+                  if mid not in ordered:
+                      ordered.append(mid)
+
+          # Probe candidates so Aider only receives models active on /chat/completions
+          verified = []
+          for mid in ordered[:10]:
+              probe_payload = json.dumps({
+                  "model": mid,
+                  "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}]
+              }).encode("utf-8")
+              try:
+                  probe_req = urllib.request.Request(
+                      "https://integrate.api.nvidia.com/v1/chat/completions",
+                      data=probe_payload,
+                      headers=headers
+                  )
+                  with urllib.request.urlopen(probe_req, timeout=20) as p_resp:
+                      if p_resp.status == 200:
+                          verified.append(mid)
+                          print(f"Verified NIM model: {mid}", file=sys.stderr)
+                          if len(verified) == 3:
+                              break
+              except Exception as e:
+                  print(f"Skipping NIM model {mid}: {e}", file=sys.stderr)
+
+          print("\n".join(verified))
           EOF
           )
+
+          if [ -z "$NVIDIA_MODELS" ]; then
+            echo "ERROR: No working NVIDIA NIM chat models resolved."
+            exit 1
+          fi
 
           SKILL_ARGS=()
           while IFS= read -r file; do
@@ -116,23 +161,24 @@ jobs:
           Approved Implementation Plan:
           $APPROVED_PLAN"
 
-          SUCCESS=false
-          for MODEL_ID in $GROQ_MODELS; do
-            echo "Running Aider with groq/${MODEL_ID}..."
+          export OPENAI_API_BASE="https://integrate.api.nvidia.com/v1"
+          export OPENAI_API_KEY="$NVIDIA_API_KEY"
+
+          for MODEL_ID in $NVIDIA_MODELS; do
+            echo "Running Aider with NVIDIA NIM model: ${MODEL_ID}..."
             if aider \
-              --model "groq/${MODEL_ID}" \
+              --model "openai/${MODEL_ID}" \
               --edit-format diff \
               --yes-always \
               --no-git \
               --no-show-model-warnings \
               --no-suggest-shell-commands \
-              --map-tokens 512 \
+              --map-tokens 1024 \
               "${SKILL_ARGS[@]}" \
               --chat-history-file /tmp/chat1.md \
               --input-history-file /tmp/input1.txt \
               --message "$PROMPT" "${EXISTING_FILES[@]}"; then
               if [ -n "$(git status --porcelain)" ]; then
-                SUCCESS=true
                 break
               fi
             fi
