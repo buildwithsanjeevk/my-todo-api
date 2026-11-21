@@ -72,7 +72,7 @@ jobs:
               "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
               "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
               "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
-              "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t"
+              "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t", "550b", "ultra"
           )
 
           priority_keywords = [
@@ -84,6 +84,7 @@ jobs:
               "mistralai/mistral-large-2-instruct",
               "qwen2.5-coder",
               "llama-3.3-70b",
+              "nemotron-3.5-bolt",
               "nemotron",
               "qwen/qwen3",
               "deepseek",
@@ -331,6 +332,7 @@ jobs:
           title = f"✅ PR #{pr_num} Created by AI" if (is_ok and pr_num) else (
               "✅ AI Code & PR Completed" if is_ok else f"❌ AI Coder Failed ({status})"
           )
+          preview_target = f"PR #{pr_num}" if pr_num else f"Issue #{issue_num}"
 
           buttons = []
           if pr_url:
@@ -353,6 +355,7 @@ jobs:
           })
 
           payload = json.dumps({
+              "text": f"{title} — {repo} ({preview_target})",
               "attachments": [{
                   "color": color,
                   "blocks": [
