@@ -1,5 +1,6 @@
 const express = require('express');
 const app = express();
+app.use(express.json());
 const port = 3000;
 
 const swaggerUi = require('swagger-ui-express');
@@ -42,8 +43,31 @@ app.get('/todos/:id', (req, res) => {
   }
 });
 
+app.post('/api/todos', (req, res) => {
+  const { title, completed } = req.body || {};
+
+  if (typeof title !== 'string' || title.trim() === '') {
+    return res.status(400).json({ error: "Invalid 'title'. Expected a non-empty string." });
+  }
+
+  const id = todos.length ? Math.max(...todos.map(todo => todo.id)) + 1 : 1;
+  const newTodo = {
+    id,
+    title,
+    completed: typeof completed === 'boolean' ? completed : false
+  };
+
+  todos.push(newTodo);
+
+  return res.status(201).json(newTodo);
+});
+
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+if (require.main === module) {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
+
+module.exports = app;

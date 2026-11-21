@@ -18,6 +18,47 @@
     }
   ],
   "paths": {
+    "/api/todos": {
+      "post": {
+        "tags": [
+          "Todos"
+        ],
+        "operationId": "createTodo",
+        "summary": "Create a new to-do",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TodoInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The newly created to-do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Todo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body (missing, blank, or non-string 'title')",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/todos": {
       "get": {
         "tags": [
@@ -116,6 +157,22 @@
           },
           "completed": {
             "type": "boolean"
+          }
+        }
+      },
+      "TodoInput": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "completed": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
