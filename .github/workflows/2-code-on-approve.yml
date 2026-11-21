@@ -292,7 +292,7 @@ jobs:
           echo "PR_NUM=$PR_NUM" >> "$GITHUB_ENV"
 
           gh issue comment "$ISSUE_NUMBER" --body "✅ Surgical code changes taiyar hain aur Pull Request open ho gaya hai: ${PR_URL}"
-          gh workflow run pr-reviewer.yml -f pr_number="$PR_NUM" || true
+          gh workflow run 3-pr-reviewer.yml -f pr_number="$PR_NUM" || true
 
       - name: Send Slack Status Alert
         if: always()
