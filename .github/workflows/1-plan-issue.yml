@@ -203,6 +203,11 @@ jobs:
           except Exception as e:
               last_error = str(e)
 
+          gh_env = os.environ.get("GITHUB_ENV")
+          if gh_env:
+              with open(gh_env, "a", encoding="utf-8") as ef:
+                  ef.write(f"PLAN_OK={'true' if plan else 'false'}\n")
+
           if not plan:
               plan = f"⚠️ {last_error}"
 
@@ -220,3 +225,83 @@ jobs:
           EOF
 
           gh issue comment "$ISSUE_NUMBER" --body-file /tmp/plan_comment.md
+
+      - name: Send Slack Status Alert
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          PLAN_OK: ${{ env.PLAN_OK }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REPO_NAME: ${{ github.repository }}
+          ISSUE_NUM: ${{ github.event.issue.number || 'N/A' }}
+          ISSUE_TITLE: ${{ github.event.issue.title || 'No Title' }}
+          ISSUE_URL: ${{ github.event.issue.html_url || '' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL secret is not set. Skipping Slack notification."
+            exit 0
+          fi
+
+          python3 - << 'EOF'
+          import os, json, urllib.request
+
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"].strip()
+          status = os.environ["JOB_STATUS"]
+          plan_ok = os.environ.get("PLAN_OK", "true")
+          repo = os.environ["REPO_NAME"]
+          wf = os.environ["WORKFLOW_NAME"]
+          issue_num = os.environ["ISSUE_NUM"]
+          issue_title = os.environ["ISSUE_TITLE"]
+          issue_url = os.environ["ISSUE_URL"].strip()
+          run_url = os.environ["RUN_URL"]
+
+          is_ok = (status == "success") and (plan_ok == "true")
+          color = "#2eb886" if is_ok else "#a30200"
+          title = "✅ AI Implementation Plan Posted" if is_ok else f"❌ AI Planner Failed ({status})"
+
+          buttons = []
+          if issue_url:
+              buttons.append({
+                  "type": "button",
+                  "style": "primary",
+                  "text": {"type": "plain_text", "text": "Open Issue"},
+                  "url": issue_url
+              })
+          buttons.append({
+              "type": "button",
+              "text": {"type": "plain_text", "text": "View Action Logs"},
+              "url": run_url
+          })
+
+          payload = json.dumps({
+              "attachments": [{
+                  "color": color,
+                  "blocks": [
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": f"*{title}*\n*Repo:* `{repo}`\n*Workflow:* {wf}\n*Issue:* #{issue_num} — {issue_title}"
+                          }
+                      },
+                      {
+                          "type": "actions",
+                          "elements": buttons
+                      }
+                  ]
+              }]
+          }).encode("utf-8")
+
+          try:
+              req = urllib.request.Request(
+                  webhook_url,
+                  data=payload,
+                  headers={"Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  print("Slack notification sent:", resp.status)
+          except Exception as e:
+              print("Slack notification failed (non-blocking):", e)
+          EOF
