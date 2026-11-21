@@ -277,7 +277,7 @@ jobs:
           EOF
 
           gh pr comment "$PR_NUMBER" --body-file /tmp/feedback_reply.md
-          gh workflow run pr-reviewer.yml -f pr_number="$PR_NUMBER" || true
+          gh workflow run 3-pr-reviewer.yml -f pr_number="$PR_NUMBER" || true
 
       - name: Send Slack Status Alert
         if: always()
