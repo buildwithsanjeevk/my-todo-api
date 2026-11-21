@@ -20,7 +20,7 @@ jobs:
 
       - name: Generate Principal-Level Architecture & LLD Plan
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
@@ -29,49 +29,62 @@ jobs:
           python3 - << 'EOF'
           import os, re, json, time, urllib.request, urllib.error, subprocess
 
-          api_key = os.environ["GROQ_API_KEY"].strip()
+          api_key = os.environ["NVIDIA_API_KEY"].strip()
           issue_num = os.environ["ISSUE_NUMBER"]
           issue_title = os.environ["ISSUE_TITLE"]
           issue_body = os.environ.get("ISSUE_BODY") or ""
 
-          # 1. Fetch active chat models available on this Groq API key
+          # 1. Fetch active chat/coding models available on NVIDIA NIM
           def get_candidate_models(key):
               req = urllib.request.Request(
-                  "https://api.groq.com/openai/v1/models",
+                  "https://integrate.api.nvidia.com/v1/models",
                   headers={
                       "Authorization": f"Bearer {key}",
+                      "Accept": "application/json",
                       "User-Agent": "GitHub-Actions-AI-Planner/1.0"
                   }
               )
               with urllib.request.urlopen(req, timeout=30) as resp:
                   models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
-              excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
-              active_ids = [
-                  m["id"] for m in models
-                  if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+              available_ids = [m["id"] for m in models if m.get("id")]
+
+              excluded = (
+                  "embed", "rerank", "guard", "safeguard", "reward", "parse", "ocr",
+                  "vlm", "vision", "clip", "deplot", "kosmos", "neva", "paligemma",
+                  "whisper", "tts", "asr", "riva", "canary", "parakeet", "vila",
+                  "stable-diffusion", "flux", "sdxl", "cosyvoice", "bge-"
+              )
+
+              priority_keywords = [
+                  "qwen/qwen2.5-coder-32b-instruct",
+                  "qwen/qwen3-235b",
+                  "deepseek-ai/deepseek-v3",
+                  "meta/llama-3.3-70b-instruct",
+                  "nvidia/llama-3.1-nemotron-70b-instruct",
+                  "mistralai/mistral-large-2-instruct",
+                  "qwen/qwq-32b",
+                  "deepseek-ai/deepseek-r1",
+                  "qwen2.5-coder",
+                  "llama-3.3-70b",
               ]
 
-              priority = [
-                  "openai/gpt-oss-120b",
-                  "qwen/qwen3.8-27b",
-                  "openai/gpt-oss-20b",
-                  "gpt-oss-120b",
-                  "qwen3.8",
-                  "qwen3",
-                  "llama-4",
-              ]
               ordered = []
-              for kw in priority:
-                  for mid in active_ids:
-                      if kw in mid.lower() and mid not in ordered:
+              for kw in priority_keywords:
+                  for mid in available_ids:
+                      low = mid.lower()
+                      if kw in low and not any(x in low for x in excluded) and mid not in ordered:
                           ordered.append(mid)
-              for mid in active_ids:
-                  if mid not in ordered:
-                      ordered.append(mid)
+
+              for mid in available_ids:
+                  low = mid.lower()
+                  if any(tag in low for tag in ("instruct", "chat", "coder")) and not any(x in low for x in excluded):
+                      if mid not in ordered:
+                          ordered.append(mid)
+
               return ordered
 
-          # 2. Scan repository (code, configs, schemas, and .skills)
+          # 2. Scan entire repository (code, configs, schemas, and .skills)
           ignore_dirs = {".git", "node_modules", ".github", "dist", "build", "coverage"}
           allowed_exts = {".js", ".ts", ".json", ".sql", ".prisma", ".md", ".yml", ".yaml"}
           context_parts = []
@@ -87,8 +100,8 @@ jobs:
                       fpath = os.path.join(root, fname).lstrip("./")
                       try:
                           with open(fpath, "r", encoding="utf-8") as f:
-                              content = f.read()[:5000]
-                          if total_chars + len(content) < 24000:
+                              content = f.read()[:6000]
+                          if total_chars + len(content) < 40000:
                               context_parts.append(f"=== FILE: {fpath} ===\n{content}")
                               total_chars += len(content)
                       except Exception:
@@ -155,10 +168,10 @@ jobs:
           try:
               candidates = get_candidate_models(api_key)
               if not candidates:
-                  raise RuntimeError("No active chat models available on this Groq API key.")
+                  raise RuntimeError("No active chat models available on this NVIDIA NIM API key.")
 
               for model_id in candidates[:3]:
-                  print(f"Trying Groq model: {model_id}")
+                  print(f"Trying NVIDIA NIM model: {model_id}")
                   payload = json.dumps({
                       "model": model_id,
                       "temperature": 0.2,
@@ -171,22 +184,26 @@ jobs:
 
                   try:
                       req = urllib.request.Request(
-                          "https://api.groq.com/openai/v1/chat/completions",
+                          "https://integrate.api.nvidia.com/v1/chat/completions",
                           data=payload,
                           headers={
                               "Authorization": f"Bearer {api_key}",
                               "Content-Type": "application/json",
+                              "Accept": "application/json",
                               "User-Agent": "GitHub-Actions-AI-Planner/1.0"
                           }
                       )
-                      with urllib.request.urlopen(req, timeout=90) as resp:
+                      with urllib.request.urlopen(req, timeout=120) as resp:
                           data = json.loads(resp.read().decode("utf-8"))
-                          raw_content = data["choices"][0]["message"]["content"]
-                          plan = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-                          break
+                          raw_content = data["choices"][0]["message"].get("content") or ""
+                          cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+                          if cleaned:
+                              plan = cleaned
+                              break
+                          last_error = f"Empty response from `{model_id}`"
                   except urllib.error.HTTPError as e:
                       err_detail = e.read().decode("utf-8", errors="ignore")
-                      last_error = f"Groq API error ({e.code}) on `{model_id}`: `{err_detail}`"
+                      last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: `{err_detail}`"
                       time.sleep(3)
                   except Exception as e:
                       last_error = f"Request error on `{model_id}`: `{e}`"
