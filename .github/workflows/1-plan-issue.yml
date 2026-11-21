@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Generate Principal-Level Architecture & LLD Plan
         env:
@@ -34,7 +34,7 @@ jobs:
           issue_title = os.environ["ISSUE_TITLE"]
           issue_body = os.environ.get("ISSUE_BODY") or ""
 
-          # 1. Fetch active chat/instruct models available on NVIDIA NIM
+          # 1. Fetch fast, active chat/instruct models on NVIDIA NIM
           def get_candidate_models(key):
               req = urllib.request.Request(
                   "https://integrate.api.nvidia.com/v1/models",
@@ -44,7 +44,7 @@ jobs:
                       "User-Agent": "GitHub-Actions-AI-Planner/1.0"
                   }
               )
-              with urllib.request.urlopen(req, timeout=30) as resp:
+              with urllib.request.urlopen(req, timeout=20) as resp:
                   models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
               available_ids = [m["id"] for m in models if m.get("id")]
@@ -54,22 +54,20 @@ jobs:
                   "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
                   "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
                   "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
-                  "cosyvoice", "bge-", "safety", "shield"
+                  "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t"
               )
 
               priority_keywords = [
-                  "qwen/qwen3",
                   "qwen/qwen2.5-coder-32b-instruct",
-                  "deepseek-ai/deepseek-v4",
-                  "deepseek-ai/deepseek-v3",
                   "meta/llama-3.3-70b-instruct",
-                  "nvidia/llama-3.3-nemotron",
+                  "nvidia/llama-3.3-nemotron-super-49b",
                   "nvidia/llama-3.1-nemotron-70b-instruct",
-                  "mistralai/mistral-large",
-                  "openai/gpt-oss",
+                  "qwen/qwen2.5-72b-instruct",
+                  "mistralai/mistral-large-2-instruct",
                   "qwen2.5-coder",
                   "llama-3.3-70b",
                   "nemotron",
+                  "qwen/qwen3",
                   "deepseek",
               ]
 
@@ -88,7 +86,7 @@ jobs:
 
               return ordered
 
-          # 2. Scan entire repository (code, configs, schemas, and .skills)
+          # 2. Scan repository context (code, configs, schemas, and .skills)
           ignore_dirs = {".git", "node_modules", ".github", "dist", "build", "coverage"}
           allowed_exts = {".js", ".ts", ".json", ".sql", ".prisma", ".md", ".yml", ".yaml"}
           context_parts = []
@@ -161,12 +159,12 @@ jobs:
               if not candidates:
                   raise RuntimeError("No active chat models available on this NVIDIA NIM API key.")
 
-              for model_id in candidates[:10]:
+              for model_id in candidates[:8]:
                   print(f"Trying NVIDIA NIM model: {model_id}")
                   payload = json.dumps({
                       "model": model_id,
                       "temperature": 0.2,
-                      "max_tokens": 4096,
+                      "max_tokens": 1500,
                       "messages": [
                           {"role": "system", "content": system_prompt},
                           {"role": "user", "content": user_prompt}
@@ -184,7 +182,7 @@ jobs:
                               "User-Agent": "GitHub-Actions-AI-Planner/1.0"
                           }
                       )
-                      with urllib.request.urlopen(req, timeout=120) as resp:
+                      with urllib.request.urlopen(req, timeout=25) as resp:
                           data = json.loads(resp.read().decode("utf-8"))
                           raw_content = data["choices"][0]["message"].get("content") or ""
                           cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
@@ -196,10 +194,10 @@ jobs:
                       err_detail = e.read().decode("utf-8", errors="ignore")
                       last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: `{err_detail}`"
                       if e.code != 404:
-                          time.sleep(3)
+                          time.sleep(1)
                   except Exception as e:
                       last_error = f"Request error on `{model_id}`: `{e}`"
-                      time.sleep(2)
+                      time.sleep(1)
           except Exception as e:
               last_error = str(e)
 
