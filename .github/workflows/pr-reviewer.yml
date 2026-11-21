@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -46,7 +46,7 @@ jobs:
                   raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
               return res.stdout
 
-          # 1. Fetch active chat/instruct models available on NVIDIA NIM
+          # 1. Fetch fast, active chat/instruct models available on NVIDIA NIM
           def get_candidate_models(key):
               req = urllib.request.Request(
                   "https://integrate.api.nvidia.com/v1/models",
@@ -56,7 +56,7 @@ jobs:
                       "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
                   }
               )
-              with urllib.request.urlopen(req, timeout=30) as resp:
+              with urllib.request.urlopen(req, timeout=20) as resp:
                   models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
               available_ids = [m["id"] for m in models if m.get("id")]
@@ -66,22 +66,20 @@ jobs:
                   "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
                   "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
                   "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
-                  "cosyvoice", "bge-", "safety", "shield"
+                  "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t"
               )
 
               priority_keywords = [
-                  "qwen/qwen3",
                   "qwen/qwen2.5-coder-32b-instruct",
-                  "deepseek-ai/deepseek-v4",
-                  "deepseek-ai/deepseek-v3",
                   "meta/llama-3.3-70b-instruct",
-                  "nvidia/llama-3.3-nemotron",
+                  "nvidia/llama-3.3-nemotron-super-49b",
                   "nvidia/llama-3.1-nemotron-70b-instruct",
-                  "mistralai/mistral-large",
-                  "openai/gpt-oss",
+                  "qwen/qwen2.5-72b-instruct",
+                  "mistralai/mistral-large-2-instruct",
                   "qwen2.5-coder",
                   "llama-3.3-70b",
                   "nemotron",
+                  "qwen/qwen3",
                   "deepseek",
               ]
 
@@ -103,9 +101,16 @@ jobs:
           # 2. Fetch PR metadata and diff
           pr_json = json.loads(run_cmd([
               "gh", "pr", "view", pr_num,
-              "--json", "title,body,headRefName,baseRefName,files,closingIssuesReferences"
+              "--json", "title,body,url,headRefName,baseRefName,files,closingIssuesReferences"
           ]))
           pr_diff = run_cmd(["gh", "pr", "diff", pr_num])
+
+          gh_env = os.environ.get("GITHUB_ENV")
+          if gh_env:
+              safe_title = pr_json.get("title", "").replace("\n", " ").strip()
+              with open(gh_env, "a", encoding="utf-8") as ef:
+                  ef.write(f"PR_URL={pr_json.get('url', '')}\n")
+                  ef.write(f"PR_TITLE={safe_title}\n")
 
           # 3. Fetch full details of linked issues safely
           linked_issue_blocks = []
@@ -192,12 +197,12 @@ jobs:
           review = None
           last_error = ""
 
-          for model_id in candidates[:10]:
+          for model_id in candidates[:8]:
               print(f"Reviewing PR with NVIDIA NIM model: {model_id}")
               payload = json.dumps({
                   "model": model_id,
                   "temperature": 0.1,
-                  "max_tokens": 3000,
+                  "max_tokens": 2000,
                   "messages": [
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt}
@@ -215,7 +220,7 @@ jobs:
                           "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
                       }
                   )
-                  with urllib.request.urlopen(req, timeout=120) as resp:
+                  with urllib.request.urlopen(req, timeout=35) as resp:
                       data = json.loads(resp.read().decode("utf-8"))
                       content = data["choices"][0]["message"].get("content") or ""
                       raw_reply = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
@@ -231,11 +236,11 @@ jobs:
               except urllib.error.HTTPError as e:
                   err_detail = e.read().decode("utf-8", errors="ignore")
                   last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: {err_detail}"
-                  if e.code != 404:
-                      time.sleep(3)
+                  if e.code not in (402, 403, 404):
+                      time.sleep(1)
               except Exception as e:
                   last_error = f"Request error on `{model_id}`: {e}"
-                  time.sleep(2)
+                  time.sleep(1)
 
           if not review:
               raise RuntimeError(f"NVIDIA NIM review failed: {last_error}")
@@ -245,12 +250,17 @@ jobs:
           checklist = review.get("checklist", [])
           suggestions = review.get("suggestions", [])
 
+          final_verdict = "APPROVED" if (status == "APPROVED" and not suggestions) else "CHANGES_REQUESTED"
+          if gh_env:
+              with open(gh_env, "a", encoding="utf-8") as ef:
+                  ef.write(f"REVIEW_VERDICT={final_verdict}\n")
+
           subprocess.run(["gh", "label", "create", "approved", "--color", "0E8A16", "--description", "AI Code Review Passed", "--force"], check=False)
           subprocess.run(["gh", "label", "changes-requested", "--color", "D93F0B", "--description", "AI Code Review Suggested Changes", "--force"], check=False)
 
           checklist_md = "\n".join(f"- ✅ {item}" for item in checklist)
 
-          if status == "APPROVED" and not suggestions:
+          if final_verdict == "APPROVED":
               subprocess.run(["gh", "pr", "edit", pr_num, "--add-label", "approved"], check=True)
               subprocess.run(["gh", "pr", "edit", pr_num, "--remove-label", "changes-requested"], check=False)
               comment_body = (
@@ -284,4 +294,88 @@ jobs:
               f.write(comment_body)
 
           run_cmd(["gh", "pr", "comment", pr_num, "--body-file", "/tmp/pr_review_comment.md"])
+          EOF
+
+      - name: Send Slack Status Alert
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          REVIEW_VERDICT: ${{ env.REVIEW_VERDICT }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REPO_NAME: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number || 'N/A' }}
+          PR_TITLE: ${{ env.PR_TITLE }}
+          PR_URL: ${{ env.PR_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL secret is not set. Skipping Slack notification."
+            exit 0
+          fi
+
+          python3 - << 'EOF'
+          import os, json, urllib.request
+
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"].strip()
+          status = os.environ["JOB_STATUS"]
+          verdict = os.environ.get("REVIEW_VERDICT", "").strip()
+          repo = os.environ["REPO_NAME"]
+          wf = os.environ["WORKFLOW_NAME"]
+          pr_num = os.environ["PR_NUMBER"]
+          pr_title = os.environ.get("PR_TITLE", "").strip() or f"PR #{pr_num}"
+          pr_url = os.environ.get("PR_URL", "").strip() or f"https://github.com/{repo}/pull/{pr_num}"
+          run_url = os.environ["RUN_URL"]
+
+          if status != "success":
+              color = "#a30200"
+              title = f"❌ AI PR Reviewer Failed ({status})"
+          elif verdict == "APPROVED":
+              color = "#2eb886"
+              title = f"🟢 AI PR Review: Approved (PR #{pr_num})"
+          else:
+              color = "#daa038"
+              title = f"🟠 AI PR Review: Changes Suggested (PR #{pr_num})"
+
+          payload = json.dumps({
+              "attachments": [{
+                  "color": color,
+                  "blocks": [
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": f"*{title}*\n*Repo:* `{repo}`\n*Workflow:* {wf}\n*PR:* #{pr_num} — {pr_title}"
+                          }
+                      },
+                      {
+                          "type": "actions",
+                          "elements": [
+                              {
+                                  "type": "button",
+                                  "style": "primary",
+                                  "text": {"type": "plain_text", "text": "Open Pull Request"},
+                                  "url": pr_url
+                              },
+                              {
+                                  "type": "button",
+                                  "text": {"type": "plain_text", "text": "View Action Logs"},
+                                  "url": run_url
+                              }
+                          ]
+                      }
+                  ]
+              }]
+          }).encode("utf-8")
+
+          try:
+              req = urllib.request.Request(
+                  webhook_url,
+                  data=payload,
+                  headers={"Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  print("Slack notification sent:", resp.status)
+          except Exception as e:
+              print("Slack notification failed (non-blocking):", e)
           EOF
