@@ -146,21 +146,31 @@ jobs:
             EXISTING_FILES+=("$file")
           done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' ! -name 'yarn.lock' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          PROMPT="You are implementing an approved GitHub issue in this Node.js Express repository.
+          export APPROVED_PLAN
+          python3 - << 'EOF'
+          import os
+
+          prompt = f"""You are implementing an approved GitHub issue in this Node.js Express repository.
 
           Rules:
           - Make only the changes required by the plan.
           - Preserve existing working code and formatting.
-          - Use proper HTTP statuses and `{ "error": "message" }` errors.
+          - Use proper HTTP statuses and {{"error": "message"}} errors.
           - Update tests or documentation only when required.
           - Do not create unrelated files or delete existing files.
 
-          Issue #$ISSUE_NUMBER: $ISSUE_TITLE
+          Issue #{os.environ["ISSUE_NUMBER"]}: {os.environ["ISSUE_TITLE"]}
           Requirements:
-          $ISSUE_BODY
+          {os.environ["ISSUE_BODY"]}
 
           Approved Implementation Plan:
-          $APPROVED_PLAN"
+          {os.environ["APPROVED_PLAN"]}
+          """
+          with open("/tmp/aider_prompt.txt", "w", encoding="utf-8") as prompt_file:
+              prompt_file.write(prompt)
+          EOF
+
+          PROMPT=$(cat /tmp/aider_prompt.txt)
 
           export OPENAI_API_BASE="https://integrate.api.nvidia.com/v1"
           export OPENAI_API_KEY="$NVIDIA_API_KEY"

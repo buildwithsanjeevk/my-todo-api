@@ -136,16 +136,26 @@ jobs:
             EXISTING_FILES+=("$file")
           done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' ! -name 'yarn.lock' \( -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          PROMPT="You are updating an open Pull Request in this Node.js Express repository.
+          export PR_CONTEXT OWNER_COMMENT
+          python3 - << 'EOF'
+          import os
+
+          prompt = f"""You are updating an open Pull Request in this Node.js Express repository.
 
           Make only the changes needed for the review feedback and owner instruction.
           Preserve existing working code and formatting. Follow loaded SKILL.md rules.
 
           Owner's Latest Instruction:
-          $OWNER_COMMENT
+          {os.environ["OWNER_COMMENT"]}
 
           Pull Request & Review Context:
-          $PR_CONTEXT"
+          {os.environ["PR_CONTEXT"]}
+          """
+          with open("/tmp/aider_feedback_prompt.txt", "w", encoding="utf-8") as prompt_file:
+              prompt_file.write(prompt)
+          EOF
+
+          PROMPT=$(cat /tmp/aider_feedback_prompt.txt)
 
           export OPENAI_API_BASE="https://integrate.api.nvidia.com/v1"
           export OPENAI_API_KEY="$NVIDIA_API_KEY"
