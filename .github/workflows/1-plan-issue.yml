@@ -54,7 +54,7 @@ jobs:
                   "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
                   "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
                   "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
-                  "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t"
+                  "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t", "550b", "ultra"
               )
 
               priority_keywords = [
@@ -66,6 +66,7 @@ jobs:
                   "mistralai/mistral-large-2-instruct",
                   "qwen2.5-coder",
                   "llama-3.3-70b",
+                  "nemotron-3.5-bolt",
                   "nemotron",
                   "qwen/qwen3",
                   "deepseek",
@@ -193,7 +194,7 @@ jobs:
                   except urllib.error.HTTPError as e:
                       err_detail = e.read().decode("utf-8", errors="ignore")
                       last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: `{err_detail}`"
-                      if e.code != 404:
+                      if e.code not in (402, 403, 404):
                           time.sleep(1)
                   except Exception as e:
                       last_error = f"Request error on `{model_id}`: `{e}`"
@@ -274,6 +275,7 @@ jobs:
           })
 
           payload = json.dumps({
+              "text": f"{title} — {repo} (Issue #{issue_num})",
               "attachments": [{
                   "color": color,
                   "blocks": [
