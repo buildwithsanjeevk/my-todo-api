@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -49,7 +49,7 @@ jobs:
           gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[] | select(.body | contains("AI Implementation Plan")) | .body] | last // ""' > /tmp/approved_plan.txt
           APPROVED_PLAN=$(cat /tmp/approved_plan.txt)
 
-          # Resolve and verify active NVIDIA NIM chat/coding models
+          # Resolve and verify fast, active NVIDIA NIM chat/coding models
           NVIDIA_MODELS=$(python3 - << 'EOF'
           import os, sys, json, urllib.request, urllib.error
 
@@ -62,7 +62,7 @@ jobs:
           }
 
           req = urllib.request.Request("https://integrate.api.nvidia.com/v1/models", headers=headers)
-          with urllib.request.urlopen(req, timeout=30) as resp:
+          with urllib.request.urlopen(req, timeout=20) as resp:
               models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
           available_ids = [m["id"] for m in models if m.get("id")]
@@ -72,22 +72,20 @@ jobs:
               "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
               "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
               "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
-              "cosyvoice", "bge-", "safety", "shield"
+              "cosyvoice", "bge-", "safety", "shield", "omni", "4-1t"
           )
 
           priority_keywords = [
               "qwen/qwen2.5-coder-32b-instruct",
-              "qwen/qwen3",
-              "deepseek-ai/deepseek-v4",
-              "deepseek-ai/deepseek-v3",
               "meta/llama-3.3-70b-instruct",
-              "nvidia/llama-3.3-nemotron",
+              "nvidia/llama-3.3-nemotron-super-49b",
               "nvidia/llama-3.1-nemotron-70b-instruct",
-              "mistralai/mistral-large",
-              "openai/gpt-oss",
+              "qwen/qwen2.5-72b-instruct",
+              "mistralai/mistral-large-2-instruct",
               "qwen2.5-coder",
               "llama-3.3-70b",
               "nemotron",
+              "qwen/qwen3",
               "deepseek",
           ]
 
@@ -106,7 +104,7 @@ jobs:
 
           # Probe candidates so Aider only receives models active on /chat/completions
           verified = []
-          for mid in ordered[:10]:
+          for mid in ordered[:8]:
               probe_payload = json.dumps({
                   "model": mid,
                   "max_tokens": 1,
@@ -118,7 +116,7 @@ jobs:
                       data=probe_payload,
                       headers=headers
                   )
-                  with urllib.request.urlopen(probe_req, timeout=20) as p_resp:
+                  with urllib.request.urlopen(probe_req, timeout=15) as p_resp:
                       if p_resp.status == 200:
                           verified.append(mid)
                           print(f"Verified NIM model: {mid}", file=sys.stderr)
@@ -194,9 +192,8 @@ jobs:
               fi
             fi
             echo "Model ${MODEL_ID} did not produce changes or hit an API limit, trying next..."
-            sleep 3
+            sleep 2
           done
-
 
       - name: Anti-Deletion & Syntax Guard
         env:
@@ -230,10 +227,11 @@ jobs:
 
       - name: Runtime Smoke Test
         run: |
+          TEST_EXIT=0
           if [ -f "package.json" ]; then
             npm install > /tmp/test_log.txt 2>&1 || true
             if grep -q '"test"' package.json && ! grep -q 'no test specified' package.json; then
-              npm test >> /tmp/test_log.txt 2>&1 || true
+              npm test >> /tmp/test_log.txt 2>&1 || TEST_EXIT=$?
             fi
             timeout 8s npm start >> /tmp/test_log.txt 2>&1 &
             SERVER_PID=$!
@@ -244,6 +242,10 @@ jobs:
           cat /tmp/test_log.txt
           rm -rf node_modules
           git checkout -- package-lock.json 2>/dev/null || rm -f package-lock.json
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            echo "ERROR: Automated tests (npm test) failed!"
+            exit $TEST_EXIT
+          fi
 
       - name: Create Concise, Review-Ready Pull Request
         env:
@@ -285,5 +287,98 @@ jobs:
 
           PR_URL=$(gh pr create --title "AI: ${ISSUE_TITLE}" --body-file /tmp/pr_body.md --base main --head "$BRANCH")
           PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "PR_URL=$PR_URL" >> "$GITHUB_ENV"
+          echo "PR_NUM=$PR_NUM" >> "$GITHUB_ENV"
+
           gh issue comment "$ISSUE_NUMBER" --body "✅ Surgical code changes taiyar hain aur Pull Request open ho gaya hai: ${PR_URL}"
           gh workflow run pr-reviewer.yml -f pr_number="$PR_NUM" || true
+
+      - name: Send Slack Status Alert
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          REPO_NAME: ${{ github.repository }}
+          ISSUE_NUM: ${{ github.event.issue.number || 'N/A' }}
+          ISSUE_TITLE: ${{ github.event.issue.title || 'No Title' }}
+          ISSUE_URL: ${{ github.event.issue.html_url || '' }}
+          PR_URL: ${{ env.PR_URL }}
+          PR_NUM: ${{ env.PR_NUM }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL secret is not set. Skipping Slack notification."
+            exit 0
+          fi
+
+          python3 - << 'EOF'
+          import os, json, urllib.request
+
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"].strip()
+          status = os.environ["JOB_STATUS"]
+          repo = os.environ["REPO_NAME"]
+          wf = os.environ["WORKFLOW_NAME"]
+          issue_num = os.environ["ISSUE_NUM"]
+          issue_title = os.environ["ISSUE_TITLE"]
+          issue_url = os.environ["ISSUE_URL"].strip()
+          pr_url = os.environ.get("PR_URL", "").strip()
+          pr_num = os.environ.get("PR_NUM", "").strip()
+          run_url = os.environ["RUN_URL"]
+
+          is_ok = (status == "success")
+          color = "#2eb886" if is_ok else "#a30200"
+          title = f"✅ PR #{pr_num} Created by AI" if (is_ok and pr_num) else (
+              "✅ AI Code & PR Completed" if is_ok else f"❌ AI Coder Failed ({status})"
+          )
+
+          buttons = []
+          if pr_url:
+              buttons.append({
+                  "type": "button",
+                  "style": "primary",
+                  "text": {"type": "plain_text", "text": "Open Pull Request"},
+                  "url": pr_url
+              })
+          if issue_url:
+              buttons.append({
+                  "type": "button",
+                  "text": {"type": "plain_text", "text": "Open Issue"},
+                  "url": issue_url
+              })
+          buttons.append({
+              "type": "button",
+              "text": {"type": "plain_text", "text": "View Action Logs"},
+              "url": run_url
+          })
+
+          payload = json.dumps({
+              "attachments": [{
+                  "color": color,
+                  "blocks": [
+                      {
+                          "type": "section",
+                          "text": {
+                              "type": "mrkdwn",
+                              "text": f"*{title}*\n*Repo:* `{repo}`\n*Workflow:* {wf}\n*Issue:* #{issue_num} — {issue_title}"
+                          }
+                      },
+                      {
+                          "type": "actions",
+                          "elements": buttons
+                      }
+                  ]
+              }]
+          }).encode("utf-8")
+
+          try:
+              req = urllib.request.Request(
+                  webhook_url,
+                  data=payload,
+                  headers={"Content-Type": "application/json"}
+              )
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  print("Slack notification sent:", resp.status)
+          except Exception as e:
+              print("Slack notification failed (non-blocking):", e)
+          EOF
