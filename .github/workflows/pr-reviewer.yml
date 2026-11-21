@@ -30,14 +30,14 @@ jobs:
 
       - name: Run AI Code Review & Apply Verdict Label
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           python3 - << 'EOF'
           import os, re, json, glob, time, subprocess, urllib.request, urllib.error
 
-          api_key = os.environ["GROQ_API_KEY"].strip()
+          api_key = os.environ["NVIDIA_API_KEY"].strip()
           pr_num = os.environ["PR_NUMBER"]
 
           def run_cmd(cmd):
@@ -46,40 +46,58 @@ jobs:
                   raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
               return res.stdout
 
-          # 1. Fetch active chat models available on this Groq API key
+          # 1. Fetch active chat/instruct models available on NVIDIA NIM
           def get_candidate_models(key):
               req = urllib.request.Request(
-                  "https://api.groq.com/openai/v1/models",
+                  "https://integrate.api.nvidia.com/v1/models",
                   headers={
                       "Authorization": f"Bearer {key}",
+                      "Accept": "application/json",
                       "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
                   }
               )
               with urllib.request.urlopen(req, timeout=30) as resp:
                   models = json.loads(resp.read().decode("utf-8")).get("data", [])
 
-              excluded = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "compound", "orpheus")
-              active_ids = [
-                  m["id"] for m in models
-                  if m.get("active", True) and not any(x in m["id"].lower() for x in excluded)
+              available_ids = [m["id"] for m in models if m.get("id")]
+
+              excluded = (
+                  "starcoder", "codegemma", "embed", "rerank", "guard", "safeguard",
+                  "reward", "parse", "ocr", "vlm", "vision", "clip", "deplot",
+                  "kosmos", "neva", "paligemma", "whisper", "tts", "asr", "riva",
+                  "canary", "parakeet", "vila", "stable-diffusion", "flux", "sdxl",
+                  "cosyvoice", "bge-", "safety", "shield"
+              )
+
+              priority_keywords = [
+                  "qwen/qwen3",
+                  "qwen/qwen2.5-coder-32b-instruct",
+                  "deepseek-ai/deepseek-v4",
+                  "deepseek-ai/deepseek-v3",
+                  "meta/llama-3.3-70b-instruct",
+                  "nvidia/llama-3.3-nemotron",
+                  "nvidia/llama-3.1-nemotron-70b-instruct",
+                  "mistralai/mistral-large",
+                  "openai/gpt-oss",
+                  "qwen2.5-coder",
+                  "llama-3.3-70b",
+                  "nemotron",
+                  "deepseek",
               ]
 
-              priority = [
-                  "openai/gpt-oss-120b",
-                  "qwen/qwen3.8-27b",
-                  "openai/gpt-oss-20b",
-                  "gpt-oss-120b",
-                  "qwen3.8",
-                  "qwen3",
-              ]
               ordered = []
-              for kw in priority:
-                  for mid in active_ids:
-                      if kw in mid.lower() and mid not in ordered:
+              for kw in priority_keywords:
+                  for mid in available_ids:
+                      low = mid.lower()
+                      if kw in low and not any(x in low for x in excluded) and mid not in ordered:
                           ordered.append(mid)
-              for mid in active_ids:
-                  if mid not in ordered:
-                      ordered.append(mid)
+
+              for mid in available_ids:
+                  low = mid.lower()
+                  if any(tag in low for tag in ("instruct", "chat")) and not any(x in low for x in excluded):
+                      if mid not in ordered:
+                          ordered.append(mid)
+
               return ordered
 
           # 2. Fetch PR metadata and diff
@@ -124,7 +142,7 @@ jobs:
                   capture_output=True, text=True
               )
               if show_res.returncode == 0:
-                  changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:5000]}")
+                  changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:8000]}")
 
           system_prompt = """You are a Principal Code Reviewer performing a strict, helpful Pull Request review.
           Evaluate the PR diff and full changed files against:
@@ -160,24 +178,24 @@ jobs:
           {linked_issues}
 
           Repository Agent Skills:
-          {skills_context[:4000]}
+          {skills_context[:6000]}
 
           Git Diff:
-          {pr_diff[:11000]}
+          {pr_diff[:18000]}
 
           Full Changed Files (for context):
-          {chr(10).join(changed_files_content)[:11000]}
+          {chr(10).join(changed_files_content)[:18000]}
           """
 
           candidates = get_candidate_models(api_key)
           if not candidates:
-              raise RuntimeError("No active chat models available on this Groq API key.")
+              raise RuntimeError("No active chat models available on this NVIDIA NIM API key.")
 
-          raw_reply = None
+          review = None
           last_error = ""
 
-          for model_id in candidates[:3]:
-              print(f"Reviewing PR with Groq model: {model_id}")
+          for model_id in candidates[:10]:
+              print(f"Reviewing PR with NVIDIA NIM model: {model_id}")
               payload = json.dumps({
                   "model": model_id,
                   "temperature": 0.1,
@@ -190,35 +208,39 @@ jobs:
 
               try:
                   req = urllib.request.Request(
-                      "https://api.groq.com/openai/v1/chat/completions",
+                      "https://integrate.api.nvidia.com/v1/chat/completions",
                       data=payload,
                       headers={
                           "Authorization": f"Bearer {api_key}",
                           "Content-Type": "application/json",
+                          "Accept": "application/json",
                           "User-Agent": "GitHub-Actions-AI-Reviewer/1.0"
                       }
                   )
-                  with urllib.request.urlopen(req, timeout=90) as resp:
+                  with urllib.request.urlopen(req, timeout=120) as resp:
                       data = json.loads(resp.read().decode("utf-8"))
-                      content = data["choices"][0]["message"]["content"]
+                      content = data["choices"][0]["message"].get("content") or ""
                       raw_reply = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+                      start_idx = raw_reply.find("{")
+                      end_idx = raw_reply.rfind("}")
+                      if start_idx == -1 or end_idx == -1:
+                          last_error = f"Model `{model_id}` did not return valid JSON"
+                          continue
+
+                      review = json.loads(raw_reply[start_idx:end_idx + 1])
                       break
               except urllib.error.HTTPError as e:
                   err_detail = e.read().decode("utf-8", errors="ignore")
-                  last_error = f"Groq API error ({e.code}) on `{model_id}`: {err_detail}"
-                  time.sleep(3)
+                  last_error = f"NVIDIA NIM API error ({e.code}) on `{model_id}`: {err_detail}"
+                  if e.code != 404:
+                      time.sleep(3)
               except Exception as e:
                   last_error = f"Request error on `{model_id}`: {e}"
-                  time.sleep(3)
+                  time.sleep(2)
 
-          if not raw_reply:
-              raise RuntimeError(f"Groq review failed: {last_error}")
-
-          start_idx = raw_reply.find("{")
-          end_idx = raw_reply.rfind("}")
-          if start_idx == -1 or end_idx == -1:
-              raise RuntimeError(f"AI did not return valid JSON:\n{raw_reply}")
-          review = json.loads(raw_reply[start_idx:end_idx + 1])
+          if not review:
+              raise RuntimeError(f"NVIDIA NIM review failed: {last_error}")
 
           status = review.get("status", "CHANGES_REQUESTED").upper()
           summary = review.get("summary", "")
