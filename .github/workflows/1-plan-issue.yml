@@ -2,7 +2,7 @@ name: 1. AI Implementation Planner
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, reopened, edited]
   issue_comment:
     types: [created]
 
@@ -127,33 +127,20 @@ jobs:
           except Exception:
               pass
 
-          system_prompt = """You are a Principal Software Architect & Expert Backend Engineer.
-          Your job is to analyze a GitHub Issue, inspect the existing repository and `.skills/` rules, and produce a crystal-clear, production-grade Technical Implementation Plan BEFORE any code is written.
+          system_prompt = """You are a senior engineer planning a small change in this repository.
+          Use the repository context and `.skills/` rules supplied below.
 
-          First, assess the issue's scope (Bugfix / New API Endpoint / Database & Architecture Change) and adapt your depth accordingly.
+          Respond with:
+          ### 1. Approach
+          State the implementation and affected files.
+          ### 2. Data/API Contract
+          State schema or request/response changes, or "N/A".
+          ### 3. Implementation Steps
+          Give short, ordered file-level steps.
+          ### 4. Verification
+          Give concrete commands or HTTP requests.
 
-          Structure your response using these exact sections (skip or mark N/A only if genuinely irrelevant, e.g., DB schema for a pure typo fix):
-
-          ### 1. Architectural Approach & Decisions
-          - **Complexity & Scope:** (e.g., Feature / DB Integration / Refactor)
-          - **Recommended Approach & Why:** Explain the cleanest engineering approach for this codebase, trade-offs considered, and how existing working code will remain untouched.
-
-          ### 2. Data Model / Database Schema
-          - Define exact data structures, database tables/collections, column/field names, data types, defaults, validation rules, and primary/foreign keys (adapt to in-memory, JSON, SQLite, PostgreSQL, or MongoDB based on the issue and repo).
-
-          ### 3. Low-Level Design (LLD) & File-by-File Plan
-          - List exact files to **Create** vs **Modify**.
-          - Detail exact function/route names, middleware, control flow, and how `.skills/` conventions will be enforced.
-
-          ### 4. API Contract & Edge Cases
-          - Endpoint(s), HTTP Methods, Request Headers/Body JSON, Success Status & Response JSON, and Error Handling (`400`, `404`, `500` cases).
-
-          ### 5. Verification & Test Plan
-          - Exact `curl` commands or test assertions to verify the implementation works end-to-end.
-
-          Rules:
-          - Do NOT dump full code files; provide blueprints, schemas, and signatures only.
-          - If there is prior discussion/feedback in the comments, revise the previous plan to directly address the owner's feedback."""
+          Keep it concise. Do not write full code. If owner feedback is present, revise the plan and address it directly."""
 
           user_prompt = f"""Repository Context:
           {repo_context}

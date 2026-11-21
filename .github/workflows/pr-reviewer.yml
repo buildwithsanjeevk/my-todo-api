@@ -144,11 +144,9 @@ jobs:
               if show_res.returncode == 0:
                   changed_files_content.append(f"=== FULL FILE ({fpath}) ===\n{show_res.stdout[:8000]}")
 
-          system_prompt = """You are a Principal Code Reviewer performing a strict, helpful Pull Request review.
-          Evaluate the PR diff and full changed files against:
-          1. The PR description & linked Issue requirements (are all acceptance criteria and edge cases met?).
-          2. Repository `.skills/` rules (minimal surgical diffs, no accidental deletion of existing working code, proper HTTP status codes, clean JSON error responses, README updates).
-          3. Bugs, syntax issues, security flaws, or logic errors.
+          system_prompt = """You are reviewing a Pull Request for correctness and minimal scope.
+          Check the linked issue, PR diff, changed files, and `.skills/` rules for missing requirements,
+          bugs, syntax/security errors, accidental deletion, or unrelated changes.
 
           Respond ONLY with valid JSON using this exact schema (no markdown fences, no extra text):
           {

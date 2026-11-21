@@ -146,13 +146,14 @@ jobs:
             EXISTING_FILES+=("$file")
           done < <(find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name 'package-lock.json' ! -name 'yarn.lock' \( -name '*.js' -o -name '*.json' -o -name '*.md' -o -name '*.sql' \))
 
-          PROMPT="You are a Senior Node.js Backend Engineer. Implement the approved plan below following industry best practices and all loaded SKILL.md rules.
+          PROMPT="You are implementing an approved GitHub issue in this Node.js Express repository.
 
-          STRICT ENGINEERING RULES:
-          1. SURGICAL DIFFS ONLY: Modify ONLY the exact lines needed for this issue. Keep the diff small, clean, and easy for a human to review.
-          2. NEVER DELETE EXISTING CODE: Preserve all existing routes, sample data, helper functions, imports, formatting, and README sections verbatim unless explicitly asked to remove them.
-          3. BEST PRACTICES: Use proper HTTP status codes (200, 201, 400, 404, 500), clean input validation, safe ID comparisons, and consistent JSON error responses.
-          4. NO JUNK FILES: Only create or edit valid project source/doc files.
+          Rules:
+          - Make only the changes required by the plan.
+          - Preserve existing working code and formatting.
+          - Use proper HTTP statuses and `{ "error": "message" }` errors.
+          - Update tests or documentation only when required.
+          - Do not create unrelated files or delete existing files.
 
           Issue #$ISSUE_NUMBER: $ISSUE_TITLE
           Requirements:
@@ -186,7 +187,6 @@ jobs:
             sleep 3
           done
 
-          find . -maxdepth 3 -type f ! -path './.git/*' ! -path './.github/*' ! -path './.skills/*' ! -path './node_modules/*' ! -name '*.js' ! -name '*.json' ! -name '*.md' ! -name '*.sql' ! -name '.gitignore' -delete
 
       - name: Anti-Deletion & Syntax Guard
         env:
